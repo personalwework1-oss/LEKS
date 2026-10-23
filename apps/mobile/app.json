@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "LEKS",
+    "slug": "leks",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "leks",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "app.leks.messenger",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Face ID защищает вход в LEKS."
+      }
+    },
+    "android": {
+      "package": "app.leks.messenger",
+      "adaptiveIcon": {
+        "backgroundColor": "#141416",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "allowBackup": false,
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        { "faceIDPermission": "Face ID защищает вход в LEKS." }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#141416",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 96
+        }
+      ]
+    ],
+    "extra": {
+      "apiUrl": "http://localhost:8080"
+    },
+    "experiments": {
+      "typedRoutes": false,
+      "reactCompiler": true
+    }
+  }
+}
