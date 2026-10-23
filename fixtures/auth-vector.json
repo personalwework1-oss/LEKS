@@ -1,0 +1,7 @@
+{
+  "description": "Device sign-in test vector shared by the Rust core and the server. Seed: 32 bytes of 0x42. Challenge: bytes 0..31. Signed message: 'leks-auth-v1:' followed by the challenge.",
+  "seedHex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "publicKeyHex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "challengeHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "signatureHex": "b0f3130aa750cc559e86eede7d91659e5d5b7326f8674beb5517d46c12eadcafea5ab5ea06bae800a0987288220e269f5178057eab3dcd012eb885665a561800"
+}

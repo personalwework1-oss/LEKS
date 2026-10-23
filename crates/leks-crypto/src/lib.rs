@@ -9,6 +9,10 @@
 //! This first version keeps state in memory. Persistent storage on the device
 //! (SQLite) and the bindings for the mobile apps are added in the next stage.
 
+mod device_key;
+
+pub use device_key::{verify as verify_ed25519, DeviceAuthKey, AUTH_CONTEXT, CHALLENGE_LEN};
+
 use std::collections::HashMap;
 
 use openmls::prelude::{tls_codec::*, *};

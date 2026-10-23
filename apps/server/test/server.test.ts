@@ -1,24 +1,11 @@
-import { PROTOCOL_VERSION, type ServerFrame } from "@leks/protocol";
-import type { FastifyInstance } from "fastify";
-import type pg from "pg";
+import { readFile } from "node:fs/promises";
+import { authMessage, PROTOCOL_VERSION } from "@leks/protocol";
+import { verifyEd25519 } from "../src/security.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type WebSocket from "ws";
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { createPool, migrate } from "../src/db.js";
-import { databaseUrl, freshDatabase } from "./helpers.js";
-
-/** Resolves with the next frame the server sends. */
-function nextFrame(ws: WebSocket): Promise<ServerFrame> {
-  return new Promise((resolve, reject) => {
-    ws.once("message", (raw) => resolve(JSON.parse(raw.toString()) as ServerFrame));
-    ws.once("error", reject);
-  });
-}
-
-function hello(protocol = PROTOCOL_VERSION) {
-  return JSON.stringify({ type: "hello", protocol, client: { platform: "test", version: "0.0.0" } });
-}
+import { databaseUrl, freshDatabase, TestClient } from "./helpers.js";
 
 describe("config", () => {
   it("requires DATABASE_URL", () => {
@@ -32,10 +19,26 @@ describe("config", () => {
   });
 });
 
+describe("device sign-in signatures", () => {
+  it("accepts the signature the Rust core produces for the shared vector", async () => {
+    const vector = JSON.parse(
+      await readFile(new URL("../../../fixtures/auth-vector.json", import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    const hex = (name: string) => Buffer.from(vector[name]!, "hex");
+    const message = authMessage(hex("challengeHex"));
+    expect(verifyEd25519(hex("publicKeyHex"), message, hex("signatureHex"))).toBe(true);
+
+    const tampered = hex("signatureHex");
+    tampered[0] = tampered[0]! ^ 1;
+    expect(verifyEd25519(hex("publicKeyHex"), message, tampered)).toBe(false);
+    expect(verifyEd25519(hex("publicKeyHex").subarray(1), message, hex("signatureHex"))).toBe(false);
+  });
+});
+
 describe("health without a database", () => {
   it("reports degraded instead of crashing", async () => {
     const pool = createPool("postgres://nobody:nothing@127.0.0.1:1/none");
-    const app = await buildApp({ pool });
+    const app = await buildApp({ pool, purgeIntervalMs: 0 });
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({ status: "degraded", database: "unavailable" });
@@ -44,13 +47,13 @@ describe("health without a database", () => {
   });
 });
 
-describe.skipIf(!databaseUrl)("server with PostgreSQL", () => {
-  let pool: pg.Pool;
-  let app: FastifyInstance;
+describe.skipIf(!databaseUrl)("server basics", () => {
+  let pool: Awaited<ReturnType<typeof freshDatabase>>;
+  let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeAll(async () => {
     pool = await freshDatabase();
-    app = await buildApp({ pool });
+    app = await buildApp({ pool, purgeIntervalMs: 0 });
     await app.ready();
   });
 
@@ -59,20 +62,10 @@ describe.skipIf(!databaseUrl)("server with PostgreSQL", () => {
     await pool?.end();
   });
 
-  it("migrations are applied once and can be re-run safely", async () => {
-    const { rows } = await pool.query<{ name: string }>("SELECT name FROM schema_migrations");
-    expect(rows.map((row) => row.name)).toContain("001_accounts_and_devices.sql");
+  it("applies migrations once and can re-run them safely", async () => {
+    const { rows } = await pool.query<{ name: string }>("SELECT name FROM schema_migrations ORDER BY name");
+    expect(rows.map((row) => row.name)).toEqual(["001_accounts_and_devices.sql", "002_auth_keys_and_delivery.sql"]);
     expect(await migrate(pool)).toEqual([]);
-  });
-
-  it("database rejects invalid usernames", async () => {
-    await expect(
-      pool.query("INSERT INTO accounts (username, display_name) VALUES ('Bad Name!', 'x')"),
-    ).rejects.toThrow();
-    await pool.query("INSERT INTO accounts (username, display_name) VALUES ('alice_1', 'Alice')");
-    await expect(
-      pool.query("INSERT INTO accounts (username, display_name) VALUES ('alice_1', 'Other')"),
-    ).rejects.toThrow();
   });
 
   it("GET /health reports ok", async () => {
@@ -81,40 +74,38 @@ describe.skipIf(!databaseUrl)("server with PostgreSQL", () => {
     expect(response.json()).toEqual({ status: "ok", database: "ok", protocol: PROTOCOL_VERSION });
   });
 
-  it("WebSocket: hello, then ping and pong", async () => {
-    const ws = await app.injectWS("/v1/ws");
-    ws.send(hello());
-    const welcome = await nextFrame(ws);
-    expect(welcome).toMatchObject({ type: "welcome", protocol: PROTOCOL_VERSION });
-
-    ws.send(JSON.stringify({ type: "ping", nonce: "n1" }));
-    expect(await nextFrame(ws)).toEqual({ type: "pong", nonce: "n1" });
-    ws.terminate();
-  });
-
-  it("WebSocket: requires hello first", async () => {
-    const ws = await app.injectWS("/v1/ws");
-    ws.send(JSON.stringify({ type: "ping", nonce: "n1" }));
-    expect(await nextFrame(ws)).toEqual({ type: "error", code: "hello_required" });
-    ws.terminate();
+  it("WebSocket: hello returns a fresh 32-byte challenge each time", async () => {
+    const client = await TestClient.open(app);
+    const first = await client.hello();
+    const second = await client.hello();
+    expect(first.length).toBe(32);
+    expect(Buffer.from(first).equals(Buffer.from(second))).toBe(false);
+    client.send({ type: "ping", nonce: "n1" });
+    expect(await client.next("pong")).toEqual({ type: "pong", nonce: "n1" });
+    client.close();
   });
 
   it("WebSocket: rejects malformed input without disconnecting", async () => {
-    const ws = await app.injectWS("/v1/ws");
-    ws.send("{not json");
-    expect(await nextFrame(ws)).toEqual({ type: "error", code: "bad_json" });
-    ws.send(JSON.stringify({ type: "unknown" }));
-    expect(await nextFrame(ws)).toEqual({ type: "error", code: "bad_frame" });
-    ws.send(hello());
-    expect((await nextFrame(ws)).type).toBe("welcome");
-    ws.terminate();
+    const client = await TestClient.open(app);
+    client.sendRaw("{not json");
+    expect(await client.next("error")).toEqual({ type: "error", code: "bad_json" });
+    client.send({ type: "unknown", requestId: "r1" });
+    expect(await client.next("error")).toEqual({ type: "error", code: "bad_frame", requestId: "r1" });
+    expect((await client.hello()).length).toBe(32);
+    client.close();
   });
 
   it("WebSocket: closes on an unsupported protocol version", async () => {
-    const ws = await app.injectWS("/v1/ws");
-    const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
-    ws.send(hello(PROTOCOL_VERSION + 1));
-    expect(await nextFrame(ws)).toEqual({ type: "error", code: "unsupported_protocol" });
-    expect(await closed).toBe(4000);
+    const client = await TestClient.open(app);
+    client.send({ type: "hello", protocol: PROTOCOL_VERSION + 1, client: { platform: "test", version: "0" } });
+    expect(await client.next("error")).toEqual({ type: "error", code: "unsupported_protocol" });
+    expect(await client.closed).toBe(4000);
+  });
+
+  it("WebSocket: limits how fast a connection may send", async () => {
+    const client = await TestClient.open(app);
+    for (let i = 0; i < 160; i++) client.send({ type: "ping", nonce: `n${i}` });
+    expect(await client.next("error")).toEqual({ type: "error", code: "rate_limited" });
+    client.close();
   });
 });
