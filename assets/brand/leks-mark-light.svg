@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="238 122 548 548" role="img" aria-label="LEKS">
+  <defs>
+    <mask id="leks-mark-cut" maskUnits="userSpaceOnUse" x="238" y="122" width="548" height="548">
+      <rect x="305.9" y="190" width="412.8" height="412.8" rx="59" transform="rotate(45 512.3 396.4)" fill="#fff"/>
+      <g fill="none" stroke="#000" stroke-width="62" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M509.4 228.6L344.6 392L453.7 499.4"/>
+        <path d="M576.7 301.6L677.8 401.9L516.7 562.2"/>
+      </g>
+      <rect x="443.5" y="357.5" width="135.7" height="47.5" rx="19.9" fill="#000"/>
+      <rect x="479.9" y="424.4" width="61.3" height="33.4" rx="15.9" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="238" y="122" width="548" height="548" fill="#F0F0F0" mask="url(#leks-mark-cut)"/>
+</svg>
