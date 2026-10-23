@@ -57,13 +57,15 @@ export class Store {
   async createAccount(input: {
     username: string;
     displayName: string;
-    recoveryHash: string;
+    passwordHash: string;
+    recoveryHash: string | null;
     device: NewDeviceRecord;
   }): Promise<{ accountId: string; deviceId: string }> {
     return this.transaction(async (client) => {
       const account = await client.query<{ id: string }>(
-        "INSERT INTO accounts (username, display_name, recovery_hash) VALUES ($1, $2, $3) RETURNING id",
-        [input.username, input.displayName, input.recoveryHash],
+        `INSERT INTO accounts (username, display_name, password_hash, recovery_hash)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [input.username, input.displayName, input.passwordHash, input.recoveryHash],
       );
       const accountId = account.rows[0]!.id;
       const deviceId = await this.insertDevice(client, accountId, input.device);
@@ -77,6 +79,11 @@ export class Store {
       [accountId, device.authPublicKey, device.platform],
     );
     return rows[0]!.id;
+  }
+
+  /** Adds a device to an account (sign-in on a new phone); other devices stay. */
+  async addDevice(accountId: string, device: NewDeviceRecord): Promise<string> {
+    return this.transaction((client) => this.insertDevice(client, accountId, device));
   }
 
   async usernameTaken(username: string): Promise<boolean> {
@@ -93,53 +100,99 @@ export class Store {
     return row ? { accountId: row.id, username: row.username, displayName: row.display_name } : null;
   }
 
-  async accountForRecovery(username: string): Promise<{
+  /** What sign-in and recovery need to know about an account. */
+  async credentials(where: { username: string } | { accountId: string }): Promise<{
     id: string;
+    username: string;
     displayName: string;
-    recoveryHash: string;
-    lockedUntil: Date | null;
+    passwordHash: string;
+    recoveryHash: string | null;
+    loginLockedUntil: Date | null;
+    recoveryLockedUntil: Date | null;
   } | null> {
+    const [column, value] = "username" in where ? ["username", where.username] : ["id", where.accountId];
     const { rows } = await this.pool.query<{
       id: string;
+      username: string;
       display_name: string;
-      recovery_hash: string;
+      password_hash: string;
+      recovery_hash: string | null;
+      login_locked_until: Date | null;
       recovery_locked_until: Date | null;
-    }>("SELECT id, display_name, recovery_hash, recovery_locked_until FROM accounts WHERE username = $1", [username]);
+    }>(
+      `SELECT id, username, display_name, password_hash, recovery_hash, login_locked_until, recovery_locked_until
+         FROM accounts WHERE ${column} = $1`,
+      [value],
+    );
     const row = rows[0];
     return row
-      ? { id: row.id, displayName: row.display_name, recoveryHash: row.recovery_hash, lockedUntil: row.recovery_locked_until }
+      ? {
+          id: row.id,
+          username: row.username,
+          displayName: row.display_name,
+          passwordHash: row.password_hash,
+          recoveryHash: row.recovery_hash,
+          loginLockedUntil: row.login_locked_until,
+          recoveryLockedUntil: row.recovery_locked_until,
+        }
       : null;
   }
 
-  /** Counts a wrong recovery code; after `maxFailures` in a row, locks recovery for `lockMinutes`. */
-  async recordRecoveryFailure(accountId: string, maxFailures: number, lockMinutes: number): Promise<void> {
+  /**
+   * Counts a failed attempt of `kind`; after `maxFailures` in a row, locks
+   * that kind of attempt for `lockMinutes`.
+   */
+  async recordFailure(kind: "login" | "recovery", accountId: string, maxFailures: number, lockMinutes: number): Promise<void> {
+    const failures = `${kind}_failures`;
+    const lockedUntil = `${kind}_locked_until`;
     await this.pool.query(
       `UPDATE accounts
-          SET recovery_failures = CASE WHEN recovery_failures + 1 >= $2 THEN 0 ELSE recovery_failures + 1 END,
-              recovery_locked_until = CASE WHEN recovery_failures + 1 >= $2
-                                           THEN now() + make_interval(mins => $3) ELSE recovery_locked_until END
+          SET ${failures} = CASE WHEN ${failures} + 1 >= $2 THEN 0 ELSE ${failures} + 1 END,
+              ${lockedUntil} = CASE WHEN ${failures} + 1 >= $2
+                                    THEN now() + make_interval(mins => $3) ELSE ${lockedUntil} END
         WHERE id = $1`,
       [accountId, maxFailures, lockMinutes],
     );
   }
 
+  async clearLoginFailures(accountId: string): Promise<void> {
+    await this.pool.query("UPDATE accounts SET login_failures = 0, login_locked_until = NULL WHERE id = $1", [accountId]);
+  }
+
+  async setPasswordHash(accountId: string, passwordHash: string): Promise<void> {
+    await this.pool.query("UPDATE accounts SET password_hash = $2 WHERE id = $1", [accountId, passwordHash]);
+  }
+
+  /** Stores a new backup code hash, or removes the code with null. */
+  async setRecoveryHash(accountId: string, recoveryHash: string | null): Promise<void> {
+    await this.pool.query(
+      "UPDATE accounts SET recovery_hash = $2, recovery_failures = 0, recovery_locked_until = NULL WHERE id = $1",
+      [accountId, recoveryHash],
+    );
+  }
+
   /**
-   * Account recovery: removes every existing device (with its queued
-   * messages and key packages), adds the new device and stores the new
-   * recovery code hash. Returns the new device id and the removed ones.
+   * Recovery with the backup code: removes every existing device (with its
+   * queued messages and key packages), adds the new device, sets the new
+   * password and uses up the code. Returns the new device id and the
+   * removed ones.
    */
-  async replaceDevices(
+  async recoverAccount(
     accountId: string,
     device: NewDeviceRecord,
-    recoveryHash: string,
+    passwordHash: string,
   ): Promise<{ deviceId: string; removed: string[] }> {
     return this.transaction(async (client) => {
       const removed = await client.query<{ id: string }>("DELETE FROM devices WHERE account_id = $1 RETURNING id", [
         accountId,
       ]);
       await client.query(
-        "UPDATE accounts SET recovery_hash = $2, recovery_failures = 0, recovery_locked_until = NULL WHERE id = $1",
-        [accountId, recoveryHash],
+        `UPDATE accounts
+            SET password_hash = $2, recovery_hash = NULL,
+                recovery_failures = 0, recovery_locked_until = NULL,
+                login_failures = 0, login_locked_until = NULL
+          WHERE id = $1`,
+        [accountId, passwordHash],
       );
       const deviceId = await this.insertDevice(client, accountId, device);
       return { deviceId, removed: removed.rows.map((row) => row.id) };

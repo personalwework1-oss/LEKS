@@ -3,13 +3,22 @@ import {
   ClientFrame,
   CloseCode,
   type ErrorCode,
+  passwordProblem,
   PROTOCOL_VERSION,
   type ServerFrame,
 } from "@leks/protocol";
 import type { FastifyInstance } from "fastify";
 import type { RawData, WebSocket } from "ws";
 import type { DeviceConnection, Hub } from "../hub.js";
-import { randomChallenge, verifyEd25519 } from "../security.js";
+import {
+  hashPassword,
+  hashRecoveryCode,
+  newRecoveryCode,
+  randomChallenge,
+  verifyEd25519,
+  verifyPassword,
+} from "../security.js";
+import { LOGIN_LOCK_MINUTES, LOGIN_MAX_FAILURES } from "./accounts.js";
 import { LimitError, type Store } from "../store.js";
 
 /** Frames a connection may send: a burst of 100, refilled at 50 per second. */
@@ -188,6 +197,36 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub) {
         case "register_push": {
           await store.registerPush(me.deviceId, frame.provider, frame.token);
           send({ type: "push_registered", requestId: frame.requestId });
+          return;
+        }
+
+        case "create_recovery_code": {
+          const recoveryCode = newRecoveryCode();
+          await store.setRecoveryHash(me.accountId, await hashRecoveryCode(recoveryCode));
+          send({ type: "recovery_code", requestId: frame.requestId, recoveryCode });
+          return;
+        }
+
+        case "delete_recovery_code": {
+          await store.setRecoveryHash(me.accountId, null);
+          send({ type: "recovery_code_deleted", requestId: frame.requestId });
+          return;
+        }
+
+        case "change_password": {
+          const account = await store.credentials({ accountId: me.accountId });
+          if (!account) return error("not_found", frame.requestId);
+          if (account.loginLockedUntil && account.loginLockedUntil > new Date()) {
+            return error("login_locked", frame.requestId);
+          }
+          if (!(await verifyPassword(frame.currentPassword, account.passwordHash))) {
+            await store.recordFailure("login", account.id, LOGIN_MAX_FAILURES, LOGIN_LOCK_MINUTES);
+            return error("wrong_password", frame.requestId);
+          }
+          if (passwordProblem(frame.newPassword, account.username)) return error("weak_password", frame.requestId);
+          await store.setPasswordHash(account.id, await hashPassword(frame.newPassword));
+          await store.clearLoginFailures(account.id);
+          send({ type: "password_changed", requestId: frame.requestId });
           return;
         }
       }

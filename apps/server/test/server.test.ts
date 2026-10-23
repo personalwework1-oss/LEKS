@@ -64,7 +64,11 @@ describe.skipIf(!databaseUrl)("server basics", () => {
 
   it("applies migrations once and can re-run them safely", async () => {
     const { rows } = await pool.query<{ name: string }>("SELECT name FROM schema_migrations ORDER BY name");
-    expect(rows.map((row) => row.name)).toEqual(["001_accounts_and_devices.sql", "002_auth_keys_and_delivery.sql"]);
+    expect(rows.map((row) => row.name)).toEqual([
+      "001_accounts_and_devices.sql",
+      "002_auth_keys_and_delivery.sql",
+      "003_passwords.sql",
+    ]);
     expect(await migrate(pool)).toEqual([]);
   });
 

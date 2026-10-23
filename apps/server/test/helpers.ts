@@ -42,15 +42,24 @@ export class DeviceKey {
 
 let counter = 0;
 
+export const PASSWORD = "Moscow-Rain-42";
+
 export async function register(
   app: App,
   username = `user_${++counter}_${Date.now() % 100000}`,
+  options: { createRecoveryCode?: boolean; password?: string } = {},
 ): Promise<{ session: AccountSession; key: DeviceKey }> {
   const key = new DeviceKey();
   const response = await app.inject({
     method: "POST",
     url: "/v1/accounts",
-    payload: { username, displayName: username, device: { platform: "ios", authPublicKey: key.publicKey } },
+    payload: {
+      username,
+      displayName: username,
+      password: options.password ?? PASSWORD,
+      createRecoveryCode: options.createRecoveryCode ?? false,
+      device: { platform: "ios", authPublicKey: key.publicKey },
+    },
   });
   if (response.statusCode !== 201) throw new Error(`registration failed: ${response.body}`);
   return { session: response.json() as AccountSession, key };

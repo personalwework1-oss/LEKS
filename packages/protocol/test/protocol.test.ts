@@ -4,6 +4,7 @@ import {
   authMessage,
   ClientFrame,
   fromBase64url,
+  passwordProblem,
   PROTOCOL_VERSION,
   RecoveryCode,
   RegisterRequest,
@@ -42,20 +43,48 @@ describe("registration", () => {
     expect(Username.parse("  Alice_1 ")).toBe("alice_1");
   });
 
+  const password = "Moscow-Rain-42";
+
   it("rejects bad usernames", () => {
     for (const username of ["ab", "with space", "кириллица", "x".repeat(33), "dash-name"]) {
-      expect(RegisterRequest.safeParse({ username, displayName: "A", device }).success).toBe(false);
+      expect(RegisterRequest.safeParse({ username, displayName: "A", password, device }).success).toBe(false);
     }
   });
 
-  it("accepts a valid request", () => {
-    expect(RegisterRequest.safeParse({ username: "alice", displayName: "Алиса", device }).success).toBe(true);
+  it("accepts a valid request; the backup code is off by default", () => {
+    const parsed = RegisterRequest.parse({ username: "alice", displayName: "Алиса", password, device });
+    expect(parsed.createRecoveryCode).toBe(false);
+  });
+
+  it("requires a password of at least 8 characters", () => {
+    expect(RegisterRequest.safeParse({ username: "alice", displayName: "A", password: "short7!", device }).success).toBe(false);
+    expect(RegisterRequest.safeParse({ username: "alice", displayName: "A", device }).success).toBe(false);
   });
 
   it("normalizes recovery codes", () => {
     expect(RecoveryCode.parse(" abcd-efgh-ijkl-mnop-qrst ")).toBe("ABCD-EFGH-IJKL-MNOP-QRST");
     expect(RecoveryCode.safeParse("ABCD-EFGH").success).toBe(false);
     expect(RecoveryCode.safeParse("ABC1-EFGH-IJKL-MNOP-QRST").success).toBe(false);
+  });
+});
+
+describe("passwordProblem", () => {
+  it("accepts ordinary passwords of 8 characters or more", () => {
+    for (const ok of ["Moscow-Rain-42", "kotik2024", "мойпароль7", "correct horse battery"]) {
+      expect(passwordProblem(ok, "alice")).toBeNull();
+    }
+  });
+
+  it("names what is wrong", () => {
+    expect(passwordProblem("abc1234")).toBe("too_short");
+    expect(passwordProblem("x".repeat(129))).toBe("too_long");
+    expect(passwordProblem("Password1")).toBe("common");
+    expect(passwordProblem("ЙЦУКЕНГШ")).toBe("common");
+    expect(passwordProblem("alice_77", "alice_77")).toBe("same_as_username");
+    expect(passwordProblem("aaaaaaaaaa")).toBe("too_simple");
+    expect(passwordProblem("abababab")).toBe("too_simple");
+    expect(passwordProblem("abcdefghij")).toBe("too_simple");
+    expect(passwordProblem("98765432")).toBe("too_simple");
   });
 });
 

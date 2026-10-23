@@ -90,30 +90,52 @@ export type MessageKind = z.infer<typeof MessageKind>;
 export const PushProvider = z.enum(["apns", "fcm"]);
 export type PushProvider = z.infer<typeof PushProvider>;
 
+/**
+ * Passwords: 8 to 128 characters. Strength is checked with
+ * `passwordProblem`, the same rule in the app and on the server.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
+export const Password = z.string().min(MIN_PASSWORD_LENGTH).max(128);
+
 // ---------------------------------------------------------------------------
-// HTTPS: registration and recovery
+// HTTPS: registration, sign-in on a new device and recovery
 
 export const RegisterRequest = z.object({
   username: Username,
   displayName: DisplayName,
+  password: Password,
+  /** The backup code is optional; it can also be created later in settings. */
+  createRecoveryCode: z.boolean().default(false),
   device: NewDevice,
 });
-export type RegisterRequest = z.infer<typeof RegisterRequest>;
+export type RegisterRequest = z.input<typeof RegisterRequest>;
 
 export const AccountSession = z.object({
   accountId: Id,
   deviceId: Id,
   username: z.string(),
   displayName: z.string(),
-  /** Shown to the user once; the server keeps only a hash. */
-  recoveryCode: z.string(),
+  /** Shown to the user once when one was created; the server keeps only a hash. */
+  recoveryCode: z.string().nullable(),
 });
 export type AccountSession = z.infer<typeof AccountSession>;
 
-/** Recovering an account signs out every old device and issues a new code. */
+/** Signs in on an additional device. Devices already signed in stay signed in. */
+export const LoginRequest = z.object({
+  username: Username,
+  password: z.string().min(1).max(128),
+  device: NewDevice,
+});
+export type LoginRequest = z.infer<typeof LoginRequest>;
+
+/**
+ * Recovery with the backup code for a forgotten password: sets a new
+ * password, signs out every old device and uses up the code.
+ */
 export const RecoverRequest = z.object({
   username: Username,
   recoveryCode: RecoveryCode,
+  newPassword: Password,
   device: NewDevice,
 });
 export type RecoverRequest = z.infer<typeof RecoverRequest>;
@@ -127,6 +149,9 @@ export const HttpErrorCode = z.enum([
   "invalid_request",
   "username_taken",
   "device_key_in_use",
+  "weak_password",
+  "login_failed",
+  "login_locked",
   "recovery_failed",
   "recovery_locked",
   "rate_limited",
@@ -170,6 +195,15 @@ export const ClientFrame = z.discriminatedUnion("type", [
     provider: PushProvider,
     token: z.string().min(1).max(4096),
   }),
+  /** Creates a backup code, replacing any earlier one. */
+  z.object({ type: z.literal("create_recovery_code"), requestId: RequestId }),
+  z.object({ type: z.literal("delete_recovery_code"), requestId: RequestId }),
+  z.object({
+    type: z.literal("change_password"),
+    requestId: RequestId,
+    currentPassword: z.string().min(1).max(128),
+    newPassword: Password,
+  }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -186,6 +220,9 @@ export const ErrorCode = z.enum([
   "already_authenticated",
   "not_found",
   "too_many_key_packages",
+  "wrong_password",
+  "weak_password",
+  "login_locked",
   "rate_limited",
   "internal",
 ]);
@@ -232,6 +269,10 @@ export const ServerFrame = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("deliver"), messages: z.array(DeliveredMessage) }),
   z.object({ type: z.literal("push_registered"), requestId: RequestId }),
+  /** The new backup code, shown to the user once. */
+  z.object({ type: z.literal("recovery_code"), requestId: RequestId, recoveryCode: z.string() }),
+  z.object({ type: z.literal("recovery_code_deleted"), requestId: RequestId }),
+  z.object({ type: z.literal("password_changed"), requestId: RequestId }),
   z.object({ type: z.literal("error"), code: ErrorCode, requestId: z.string().optional() }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
@@ -278,6 +319,41 @@ export function fromBase64url(text: string): Uint8Array {
     }
   }
   return out;
+}
+
+/**
+ * Most common passwords of 8+ characters, in Russian- and English-speaking
+ * leaks. A password on this list is rejected no matter its length.
+ */
+const COMMON_PASSWORDS = new Set([
+  "12345678", "123456789", "1234567890", "12345678910", "123123123", "11111111", "00000000", "88888888",
+  "87654321", "123456654321", "1q2w3e4r", "1q2w3e4r5t", "1q2w3e4r5t6y", "q1w2e3r4", "zaq12wsx", "1qaz2wsx",
+  "qwertyui", "qwertyuiop", "qwerty123", "qwerty12", "qwerty1234", "asdfghjk", "asdfghjkl", "zxcvbnm1",
+  "password", "password1", "password123", "passw0rd", "p@ssw0rd", "iloveyou", "sunshine", "princess",
+  "football", "baseball", "superman", "starwars", "whatever", "trustno1", "letmein1", "welcome1",
+  "admin123", "administrator", "computer", "internet", "michelle", "jennifer", "1234qwer", "qwer1234",
+  "abcd1234", "abc12345", "a1234567", "aa123456", "qazwsxedc", "q1w2e3r4t5", "q1w2e3r4t5y6", "123qweasd",
+  "1qazxsw2", "matrix12", "dragon12", "monkey12", "master12", "killer12", "samsung1", "iphone12",
+  "йцукенгш", "йцукенгшщз", "пароль12", "пароль123", "привет12", "люблютебя", "наташа12", "максим12",
+  "nikita12", "natasha1", "maksim12", "aleksandr", "alexander", "vladimir", "dmitriy1", "sergey12",
+  "andrey12", "marina12", "svetlana", "kristina", "katerina", "valentina", "zenit2011", "spartak1",
+  "leks1234", "lecksis1", "messenger", "telegram", "whatsapp",
+]);
+
+export type PasswordProblem = "too_short" | "too_long" | "common" | "same_as_username" | "too_simple";
+
+/** Why a new password is not allowed, or null if it is fine. */
+export function passwordProblem(password: string, username?: string): PasswordProblem | null {
+  if (password.length < MIN_PASSWORD_LENGTH) return "too_short";
+  if (password.length > 128) return "too_long";
+  const lower = password.toLowerCase();
+  if (COMMON_PASSWORDS.has(lower)) return "common";
+  if (username && lower.includes(username.toLowerCase()) && lower.length - username.length < 4) return "same_as_username";
+  if (new Set(lower).size <= 2) return "too_simple";
+  const codes = [...lower].map((char) => char.codePointAt(0)!);
+  const steps = codes.slice(1).map((code, i) => code - codes[i]!);
+  if (steps.every((step) => step === 1) || steps.every((step) => step === -1)) return "too_simple";
+  return null;
 }
 
 /** The exact bytes a device signs to authenticate. */

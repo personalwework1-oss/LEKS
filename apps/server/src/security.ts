@@ -1,5 +1,6 @@
 import { createPublicKey, randomBytes, randomInt, scrypt, timingSafeEqual, verify } from "node:crypto";
 import { promisify } from "node:util";
+import argon2 from "@node-rs/argon2";
 
 const scryptAsync = promisify(scrypt) as (
   password: string,
@@ -24,6 +25,33 @@ export function verifyEd25519(publicKey: Uint8Array, message: Uint8Array, signat
   } catch {
     return false;
   }
+}
+
+/** OWASP-recommended Argon2id settings: 19 MiB of memory, 2 passes. */
+const ARGON2 = { memoryCost: 19 * 1024, timeCost: 2, parallelism: 1 };
+
+export function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password.normalize("NFC"), ARGON2);
+}
+
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  try {
+    return await argon2.verify(stored, password.normalize("NFC"));
+  } catch {
+    // A malformed stored hash (such as '!') never matches.
+    return false;
+  }
+}
+
+let dummyHash: Promise<string> | undefined;
+
+/**
+ * Spends the same time as checking a real password, so a sign-in attempt
+ * for an unknown username cannot be told apart by how long it takes.
+ */
+export async function burnPasswordCheck(password: string): Promise<void> {
+  dummyHash ??= hashPassword("dummy password for timing");
+  await verifyPassword(password, await dummyHash);
 }
 
 export function randomChallenge(): Buffer {
