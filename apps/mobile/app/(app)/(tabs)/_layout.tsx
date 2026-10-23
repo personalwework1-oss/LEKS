@@ -1,4 +1,4 @@
-import { Tabs } from "expo-router";
+import { type Href, router, Tabs } from "expo-router";
 import type { ComponentProps } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -7,14 +7,14 @@ import { fonts, usePalette } from "@/theme";
 
 type BottomTabBarProps = Parameters<NonNullable<ComponentProps<typeof Tabs>["tabBar"]>>[0];
 
-const tabs: Record<string, { title: string; icon: IconName }> = {
-  index: { title: "Чаты", icon: "chats" },
-  contacts: { title: "Контакты", icon: "person" },
-  settings: { title: "Настройки", icon: "settings" },
+const tabs: Record<string, { title: string; icon: IconName; href: Href }> = {
+  index: { title: "Чаты", icon: "chats", href: "/" },
+  contacts: { title: "Контакты", icon: "person", href: "/contacts" },
+  settings: { title: "Настройки", icon: "settings", href: "/settings" },
 };
 
 /** Bottom bar from the design: three sections; the wallet is added as a fourth later. */
-function TabBar({ state, navigation }: BottomTabBarProps) {
+function TabBar({ state }: BottomTabBarProps) {
   const p = usePalette();
   const insets = useSafeAreaInsets();
   return (
@@ -42,8 +42,7 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
             accessibilityState={{ selected: focused }}
             accessibilityLabel={tab.title}
             onPress={() => {
-              const event = navigation.emit({ type: "tabPress", target: route.key, canPreventDefault: true });
-              if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
+              if (!focused) router.navigate(tab.href);
             }}
             style={{ flex: 1, alignItems: "center", gap: 3, paddingVertical: 2 }}
           >

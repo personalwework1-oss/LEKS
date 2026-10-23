@@ -29,6 +29,7 @@
     "expo-status-bar": "~58.0.0",
     "expo-system-ui": "~58.0.0",
     "react": "19.3.0",
+    "react-dom": "19.3.0",
     "react-native": "0.88.0",
     "react-native-gesture-handler": "~3.3.0",
     "react-native-safe-area-context": "~5.10.1",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
+    "@types/node": "^22.18.0",
     "@types/react": "~19.3.0",
     "jest": "^30.2.0",
     "jest-expo": "~58.0.0",
@@ -45,7 +47,9 @@
   },
   "jest": {
     "preset": "jest-expo",
-    "testMatch": ["<rootDir>/test/**/*.test.ts?(x)"],
+    "testMatch": [
+      "<rootDir>/test/**/*.test.ts?(x)"
+    ],
     "transformIgnorePatterns": [
       "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|react-native-svg|@noble/.*|@leks/.*)"
     ]

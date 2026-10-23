@@ -4,8 +4,18 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "paths": {
-      "@/*": ["./src/*"]
-    }
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "types": [
+      "jest",
+      "node"
+    ]
   },
-  "include": ["**/*.ts", "**/*.tsx", "expo-env.d.ts"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "expo-env.d.ts"
+  ]
 }

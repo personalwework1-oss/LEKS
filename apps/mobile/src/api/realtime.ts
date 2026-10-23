@@ -10,6 +10,8 @@ import {
 export type ConnectionState = "offline" | "connecting" | "online" | "signed_out";
 
 type RequestFrame = Extract<ClientFrame, { requestId: string }>;
+/** A request frame without its id; distributes over the union so each frame keeps its own fields. */
+type RequestBody = RequestFrame extends infer F ? (F extends unknown ? Omit<F, "requestId"> : never) : never;
 type ResponseFrame = Extract<ServerFrame, { requestId: string }>;
 
 export interface RealtimeOptions {
@@ -75,7 +77,7 @@ export class Realtime {
 
   /** Sends a request and resolves with the matching answer once online. */
   async request<T extends ResponseFrame["type"]>(
-    frame: Omit<RequestFrame, "requestId">,
+    frame: RequestBody,
     expect: T,
   ): Promise<Extract<ResponseFrame, { type: T }>> {
     await this.online();

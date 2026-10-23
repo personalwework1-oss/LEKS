@@ -88,7 +88,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         secure.loadSession(),
         secure.loadDeviceSecret(),
         secure.loadLock(),
-        LocalAuthentication.supportedAuthenticationTypesAsync().catch(() => []),
+        LocalAuthentication.supportedAuthenticationTypesAsync().catch((): LocalAuthentication.AuthenticationType[] => []),
       ]);
       setBiometricLabel(
         types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)
