@@ -1,0 +1,18 @@
+[package]
+name = "leks-crypto"
+version = "0.1.0"
+description = "End-to-end encryption core for the messenger, built on OpenMLS (RFC 9420)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# staticlib: linked into the iOS app; cdylib: loaded by the Android app.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+openmls = "0.9.2"
+openmls_rust_crypto = "0.6.0"
+openmls_basic_credential = "0.6.0"
+thiserror = "2"
