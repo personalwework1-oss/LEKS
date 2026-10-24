@@ -63,8 +63,14 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://leks:leks@localhost:5432/leks_test
+      # The phone's encryption core as a command-line program, for the end-to-end test.
+      LEKS_CRYPTO_CLI: ${{ github.workspace }}/target/release/leks-crypto-cli
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the encryption core CLI
+        run: cargo build --release -p leks-crypto --bin leks-crypto-cli
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
