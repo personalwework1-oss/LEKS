@@ -133,7 +133,7 @@ function CallScreen({ state }: { state: CallState }) {
 
 /** In the room: video tiles (or the name), the timer and controls. */
 function Connected({ state, name }: { state: CallState; name: string }) {
-  const { e2eeManager } = useRNE2EEManager({ sharedKey: state.key ?? "", dataChannelEncryption: true });
+  const { e2eeManager } = useRNE2EEManager({ sharedKey: state.key ?? "" });
 
   useEffect(() => {
     void AudioSession.startAudioSession();
