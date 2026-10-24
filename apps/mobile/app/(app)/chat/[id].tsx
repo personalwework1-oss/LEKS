@@ -24,7 +24,7 @@ export default function Chat() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
   const { id, skipped } = useLocalSearchParams<{ id: string; skipped?: string }>();
-  const { messenger, connection, session } = useSession();
+  const { messenger, connection, session, calls } = useSession();
   const { data: chat } = useConversation(id);
   const { data: messages } = useMessages(id);
   const typing = useTyping(id);
@@ -163,6 +163,12 @@ export default function Chat() {
           </View>
         </View>
         </Pressable>
+        {chat && !chat.left ? (
+          <>
+            <IconButton icon="phone" label="Аудиозвонок" tone="plain" onPress={() => void calls?.start(id, false)} />
+            <IconButton icon="video" label="Видеозвонок" tone="plain" onPress={() => void calls?.start(id, true)} />
+          </>
+        ) : null}
       </View>
 
       <FlatList

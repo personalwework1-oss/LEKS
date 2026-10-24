@@ -1,9 +1,11 @@
 import { Stack } from "expo-router";
+import { CallOverlay } from "@/calls/CallOverlay";
 import { usePalette } from "@/theme";
 
 export default function AppLayout() {
   const p = usePalette();
   return (
+    <>
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: p.ground } }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="chat/[id]" />
@@ -13,5 +15,7 @@ export default function AppLayout() {
       <Stack.Screen name="settings/password" />
       <Stack.Screen name="settings/backup-code" />
     </Stack>
+    <CallOverlay />
+    </>
   );
 }
