@@ -228,7 +228,7 @@ jobs:
               echo "## $name ($conclusion)"
               echo
               echo '```'
-              grep -E "test result:|Tests +[0-9]|Test Files|✓|✗|×|FAIL|libleks_crypto\.(so|a)" "job-$id.full" | sed -E 's/^[0-9TZ:.-]+ //' | tail -n 60 || true
+              grep -E "test result:|Tests +[0-9]|Tests:|Test Suites:|Test Files|✓|✗|×|FAIL|libleks_crypto\.(so|a)|app-release" "job-$id.full" | sed -E 's/^[0-9TZ:.-]+ //' | tail -n 60 || true
               echo '```'
             } >> README.md
             if [ "$conclusion" = "failure" ]; then tail -n 400 "job-$id.full" > "job-$id.log"; fi
