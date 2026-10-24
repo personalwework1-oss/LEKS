@@ -4,13 +4,14 @@ import {
   isTrackReference,
   useLocalParticipant,
   useRNE2EEManager,
+  useConnectionState,
   useRoomContext,
   useTracks,
   VideoTrack,
 } from "@livekit/react-native";
-import { type LocalVideoTrack, Track } from "livekit-client";
+import { ConnectionState, type LocalVideoTrack, RoomEvent, Track } from "livekit-client";
 import { useEffect, useState } from "react";
-import { Modal, Pressable, Vibration, View } from "react-native";
+import { Modal, PermissionsAndroid, Platform, Pressable, Vibration, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar } from "@/components/ui";
@@ -131,16 +132,39 @@ function CallScreen({ state }: { state: CallState }) {
   );
 }
 
+/** Asks for the microphone (and camera for video) before joining; Android needs this up front. */
+async function askForMedia(video: boolean): Promise<boolean> {
+  if (Platform.OS !== "android") return true;
+  const wanted = [PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, ...(video ? [PermissionsAndroid.PERMISSIONS.CAMERA] : [])];
+  const result = await PermissionsAndroid.requestMultiple(wanted);
+  return result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED;
+}
+
 /** In the room: video tiles (or the name), the timer and controls. */
 function Connected({ state, name }: { state: CallState; name: string }) {
   const { e2eeManager } = useRNE2EEManager({ sharedKey: state.key ?? "" });
+  const [ready, setReady] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
-    void AudioSession.startAudioSession();
+    let alive = true;
+    (async () => {
+      const allowed = await askForMedia(state.video);
+      if (!alive) return;
+      if (!allowed) {
+        setProblem("Нет доступа к микрофону. Разрешите его в настройках телефона.");
+        return;
+      }
+      await AudioSession.startAudioSession();
+      if (alive) setReady(true);
+    })().catch((error: unknown) => alive && setProblem(`Не удалось включить звук: ${String(error)}`));
     return () => {
+      alive = false;
       void AudioSession.stopAudioSession();
     };
   }, []);
+
+  if (!ready) return <Waiting name={name} state={state} text={problem ?? "Подключение…"} warn={!!problem} />;
 
   return (
     <LiveKitRoom
@@ -150,30 +174,78 @@ function Connected({ state, name }: { state: CallState; name: string }) {
       audio
       video={state.video}
       options={{ adaptiveStream: { pixelDensity: "screen" }, e2ee: { e2eeManager } }}
+      onError={(error) => setProblem(error.message)}
+      onDisconnected={(reason) => reason !== undefined && setProblem(`Соединение прервалось (${String(reason)})`)}
     >
-      <RoomView state={state} name={name} />
+      <RoomView state={state} name={name} problem={problem} />
     </LiveKitRoom>
   );
 }
 
-function RoomView({ state, name }: { state: CallState; name: string }) {
+function Waiting({ name, state, text, warn }: { name: string; state: CallState; text: string; warn?: boolean }) {
+  const { calls } = useSession();
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, alignItems: "center", paddingTop: 60, gap: 14 }}>
+        <Avatar name={name} seed={state.conversationId ?? ""} size={112} />
+        <AppText variant="title" color="#FFFFFF" style={{ textAlign: "center", paddingHorizontal: 24 }}>
+          {name}
+        </AppText>
+        <AppText color={warn ? "#F5A623" : "rgba(255,255,255,0.7)"} style={{ textAlign: "center", paddingHorizontal: 24 }} accessibilityLiveRegion="polite">
+          {text}
+        </AppText>
+      </View>
+      <View style={{ alignItems: "center" }}>
+        <RoundButton icon="callEnd" label="Завершить" color="#E5484D" onPress={() => void calls?.hangUp()} />
+      </View>
+    </View>
+  );
+}
+
+const CONNECTION_TEXT: Partial<Record<ConnectionState, string>> = {
+  [ConnectionState.Connecting]: "Подключение…",
+  [ConnectionState.Reconnecting]: "Переподключение…",
+  [ConnectionState.SignalReconnecting]: "Переподключение…",
+  [ConnectionState.Disconnected]: "Нет соединения",
+};
+
+function RoomView({ state, name, problem }: { state: CallState; name: string; problem: string | null }) {
   const { calls } = useSession();
   const room = useRoomContext();
+  const connection = useConnectionState(room);
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant();
   const tracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
   const [encrypted, setEncrypted] = useState(false);
   const [front, setFront] = useState(true);
   const [now, setNow] = useState(Date.now());
+  const [others, setOthers] = useState(room.remoteParticipants.size);
+  const [joinedAt, setJoinedAt] = useState<number | null>(null);
 
-  // Media is encrypted on the phone; the call shows a warning if that ever fails.
+  // Media is encrypted on the phone. LiveKit reports when that is actually on.
   useEffect(() => {
-    let alive = true;
-    room
-      .setE2EEEnabled(true)
-      .then(() => alive && setEncrypted(room.isE2EEEnabled))
-      .catch(() => alive && setEncrypted(false));
+    const onStatus = (enabled: boolean, participant?: { isLocal?: boolean }) => {
+      if (!participant || participant.isLocal) setEncrypted(enabled);
+    };
+    room.on(RoomEvent.ParticipantEncryptionStatusChanged, onStatus);
+    void room.setE2EEEnabled(true).catch(() => setEncrypted(false));
     return () => {
-      alive = false;
+      room.off(RoomEvent.ParticipantEncryptionStatusChanged, onStatus);
+    };
+  }, [room]);
+
+  // The timer starts when the other person is actually in the call.
+  useEffect(() => {
+    const update = () => {
+      const count = room.remoteParticipants.size;
+      setOthers(count);
+      if (count > 0) setJoinedAt((at) => at ?? Date.now());
+    };
+    update();
+    room.on(RoomEvent.ParticipantConnected, update);
+    room.on(RoomEvent.ParticipantDisconnected, update);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, update);
+      room.off(RoomEvent.ParticipantDisconnected, update);
     };
   }, [room]);
 
@@ -184,7 +256,7 @@ function RoomView({ state, name }: { state: CallState; name: string }) {
 
   const remote = tracks.filter((t) => isTrackReference(t) && !t.participant.isLocal);
   const mine = tracks.find((t) => isTrackReference(t) && t.participant.isLocal);
-  const others = room.remoteParticipants.size;
+  const live = connection === ConnectionState.Connected;
 
   async function flipCamera() {
     const camera = localParticipant.getTrackPublication(Track.Source.Camera)?.track as LocalVideoTrack | undefined;
@@ -192,6 +264,16 @@ function RoomView({ state, name }: { state: CallState; name: string }) {
     await camera.restartTrack({ facingMode: front ? "environment" : "user" });
     setFront(!front);
   }
+
+  const status = problem
+    ? problem
+    : !live
+      ? (CONNECTION_TEXT[connection] ?? "Подключение…")
+      : others === 0
+        ? state.phase === "outgoing"
+          ? "Вызов…"
+          : "Ожидание собеседника…"
+        : formatDuration(now - (joinedAt ?? now));
 
   return (
     <View style={{ flex: 1 }}>
@@ -213,16 +295,18 @@ function RoomView({ state, name }: { state: CallState; name: string }) {
         ) : null}
       </View>
 
-      <View style={{ alignItems: "center", gap: 6, paddingVertical: 14 }}>
-        <AppText color="#FFFFFF" style={{ fontVariant: ["tabular-nums"] }} accessibilityLiveRegion="polite">
-          {state.phase === "outgoing" ? "Вызов…" : others === 0 ? "Ожидание собеседника…" : formatDuration(now - (state.startedAt ?? now))}
+      <View style={{ alignItems: "center", gap: 6, paddingVertical: 14, paddingHorizontal: 24 }}>
+        <AppText color={problem ? "#F5A623" : "#FFFFFF"} style={{ fontVariant: ["tabular-nums"], textAlign: "center" }} accessibilityLiveRegion="polite">
+          {status}
         </AppText>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name={encrypted ? "lock" : "warning"} size={13} color={encrypted ? "rgba(255,255,255,0.6)" : "#F5A623"} strokeWidth={2.4} />
-          <AppText variant="caption" color={encrypted ? "rgba(255,255,255,0.6)" : "#F5A623"}>
-            {encrypted ? "Сквозное шифрование" : "Шифрование звонка не включилось"}
-          </AppText>
-        </View>
+        {live ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Icon name={encrypted ? "lock" : "warning"} size={13} color={encrypted ? "rgba(255,255,255,0.6)" : "#F5A623"} strokeWidth={2.4} />
+            <AppText variant="caption" color={encrypted ? "rgba(255,255,255,0.6)" : "#F5A623"}>
+              {encrypted ? "Сквозное шифрование" : "Включается шифрование…"}
+            </AppText>
+          </View>
+        ) : null}
       </View>
 
       <View style={{ flexDirection: "row", justifyContent: "space-evenly", alignItems: "center" }}>
@@ -231,14 +315,19 @@ function RoomView({ state, name }: { state: CallState; name: string }) {
           label={isMicrophoneEnabled ? "Выключить микрофон" : "Включить микрофон"}
           color={isMicrophoneEnabled ? "rgba(255,255,255,0.16)" : "#FFFFFF"}
           iconColor={isMicrophoneEnabled ? "#FFFFFF" : "#0E1117"}
-          onPress={() => void localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled)}
+          onPress={() => void localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled).catch((e: unknown) => console.warn("mic", e))}
         />
         <RoundButton
           icon={isCameraEnabled ? "video" : "videoOff"}
           label={isCameraEnabled ? "Выключить камеру" : "Включить камеру"}
           color={isCameraEnabled ? "rgba(255,255,255,0.16)" : "#FFFFFF"}
           iconColor={isCameraEnabled ? "#FFFFFF" : "#0E1117"}
-          onPress={() => void localParticipant.setCameraEnabled(!isCameraEnabled)}
+          onPress={() =>
+            void (async () => {
+              if (!isCameraEnabled && !(await askForMedia(true))) return;
+              await localParticipant.setCameraEnabled(!isCameraEnabled);
+            })().catch((e: unknown) => console.warn("camera", e))
+          }
         />
         {isCameraEnabled ? <RoundButton icon="flip" label="Сменить камеру" color="rgba(255,255,255,0.16)" onPress={() => void flipCamera()} /> : null}
         <RoundButton icon="callEnd" label="Завершить" color="#E5484D" onPress={() => void calls?.hangUp()} />

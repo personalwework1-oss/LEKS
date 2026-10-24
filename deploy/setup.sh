@@ -22,6 +22,9 @@ ufw allow 443 >/dev/null
 ufw allow 7881/tcp >/dev/null
 ufw allow 50000:50200/udp >/dev/null
 ufw allow 3478/udp >/dev/null
+# The web server runs in Docker and hands call signalling to the media server
+# on the host; without this the firewall drops that traffic.
+ufw allow from 172.16.0.0/12 to any port 7880 proto tcp >/dev/null
 ufw --force enable >/dev/null
 
 # Keys only, no passwords.

@@ -101,7 +101,17 @@ jobs:
         run: |
           exec > >(tee -a /tmp/deploy.log) 2>&1
           for i in $(seq 1 40); do
-            if body=$(curl -fsS "https://$LEKS_HOST/health"); then echo "health: $body"; exit 0; fi
+            if body=$(curl -fsS "https://$LEKS_HOST/health"); then
+              echo "health: $body"
+              # Calls: without a pass the media server must answer 401, proving the path through the web server works.
+              code=$(curl -s -o /tmp/rtc.txt -w "%{http_code}" "https://$LEKS_HOST/rtc/validate")
+              echo "calls path: HTTP $code $(head -c 200 /tmp/rtc.txt)"
+              if [ "$code" = "502" ] || [ "$code" = "504" ] || [ "$code" = "000" ]; then
+                ssh "root@$SERVER_IP" "cd /opt/leks && docker compose logs --tail 40 livekit caddy"
+                exit 1
+              fi
+              exit 0
+            fi
             sleep 5
           done
           ssh "root@$SERVER_IP" "cd /opt/leks && docker compose logs --tail 80"

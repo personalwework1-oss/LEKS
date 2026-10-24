@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import { type ComponentRef, useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native";
+import { FlatList, KeyboardAvoidingView, Modal, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AttachmentView } from "@/components/AttachmentView";
 import { Icon, type IconName } from "@/components/Icon";
@@ -128,7 +128,7 @@ export default function Chat() {
           : "защищённый чат";
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: p.chatGround }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: p.chatGround }} behavior="padding">
       <View
         style={{
           paddingTop: insets.top + 6,

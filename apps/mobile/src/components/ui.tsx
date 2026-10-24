@@ -2,7 +2,6 @@ import { type ReactNode, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -68,7 +67,8 @@ export function Screen({
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: background ?? p.ground }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      // Android draws edge to edge, so the window no longer shrinks for the keyboard there either.
+      behavior="padding"
     >
       {scroll ? (
         <ScrollView contentContainerStyle={content} keyboardShouldPersistTaps="handled">

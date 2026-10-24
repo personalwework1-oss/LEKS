@@ -35,7 +35,7 @@ services:
 
   # Calls. Host networking, because media uses a range of UDP ports.
   livekit:
-    image: livekit/livekit-server:v1.8.4
+    image: livekit/livekit-server:v1.13.10
     restart: unless-stopped
     network_mode: host
     command: ["--config", "/etc/livekit.yaml", "--node-ip", "${SERVER_IP:?}"]
