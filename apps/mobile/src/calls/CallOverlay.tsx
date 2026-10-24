@@ -149,7 +149,7 @@ function Connected({ state, name }: { state: CallState; name: string }) {
       connect
       audio
       video={state.video}
-      options={{ adaptiveStream: { pixelDensity: "screen" }, encryption: { e2eeManager } }}
+      options={{ adaptiveStream: { pixelDensity: "screen" }, e2ee: { e2eeManager } }}
     >
       <RoomView state={state} name={name} />
     </LiveKitRoom>
