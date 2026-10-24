@@ -123,6 +123,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the encryption core for Android
+        run: scripts/build-native.sh android
       - name: Install
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
       - name: Build the shared protocol
@@ -133,11 +139,49 @@ jobs:
       - name: Build release APK
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64
+      - name: Check the encryption core is inside the APK
+        working-directory: apps/mobile/android/app/build/outputs/apk/release
+        run: |
+          ls -lh *.apk
+          unzip -l *.apk | grep libleks_crypto.so
       - uses: actions/upload-artifact@v4
         with:
           name: leks-android-apk
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
           retention-days: 14
+
+  ios-app:
+    name: iOS app (simulator build)
+    needs: mobile
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the encryption core for iOS
+        run: scripts/build-native.sh ios
+      - name: Install
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+      - name: Build the shared protocol
+        run: pnpm --filter @leks/protocol run build
+      - name: Generate the native iOS project
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform ios
+      - name: Build for the simulator (no signing)
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace *.xcworkspace -scheme "$(basename *.xcworkspace .xcworkspace)" \
+            -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 80
+          ls -d build/Build/Products/Release-iphonesimulator/*.app && echo "app-release ios simulator build ok"
 
   rust:
     name: Encryption core
@@ -155,49 +199,10 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
-  android:
-    name: Encryption core for Android
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, x86_64-linux-android
-      - uses: Swatinem/rust-cache@v2
-      - name: Build with the Android NDK
-        run: |
-          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android26-clang"
-          export CC_aarch64_linux_android="$bin/aarch64-linux-android26-clang"
-          export AR_aarch64_linux_android="$bin/llvm-ar"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android26-clang"
-          export CC_x86_64_linux_android="$bin/x86_64-linux-android26-clang"
-          export AR_x86_64_linux_android="$bin/llvm-ar"
-          for target in aarch64-linux-android x86_64-linux-android; do
-            cargo build --release -p leks-crypto --target "$target"
-            ls -lh "target/$target/release/libleks_crypto.so"
-          done
-
-  ios:
-    name: Encryption core for iOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios, aarch64-apple-ios-sim
-      - uses: Swatinem/rust-cache@v2
-      - name: Build for iPhone and the simulator
-        run: |
-          for target in aarch64-apple-ios aarch64-apple-ios-sim; do
-            cargo build --release -p leks-crypto --target "$target"
-            ls -lh "target/$target/release/libleks_crypto.a"
-          done
-
   report:
     name: Report
     if: always() && github.event_name == 'push'
-    needs: [node, mobile, android-app, rust, android, ios]
+    needs: [node, mobile, android-app, ios-app, rust]
     runs-on: ubuntu-latest
     permissions:
       contents: write

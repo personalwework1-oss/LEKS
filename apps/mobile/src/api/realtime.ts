@@ -27,6 +27,16 @@ export interface RealtimeOptions {
   onMessages?: (messages: DeliveredMessage[]) => void;
 }
 
+type SendFrame = Extract<ClientFrame, { type: "send" }>;
+type SentFrame = Extract<ServerFrame, { type: "sent" }>;
+
+/** Set later by whoever processes messages (the messenger), so it can be created after the connection. */
+export interface RealtimeHandlers {
+  onMessages?: (messages: DeliveredMessage[]) => void;
+  /** Called after each sign-in with how many key packages the server still holds for this device. */
+  onAuthenticated?: (keyPackagesAvailable: number) => void;
+}
+
 /** Thrown when a request gets an `error` frame back. */
 export class RealtimeError extends Error {
   constructor(readonly code: string) {
@@ -53,6 +63,13 @@ export class Realtime {
     { resolve: (frame: ResponseFrame) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
   >();
   private readonly waitingForOnline: (() => void)[] = [];
+  private readonly pendingSends = new Map<
+    string,
+    { resolve: (frame: SentFrame) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  private handlers: RealtimeHandlers = {};
+  private buffered: DeliveredMessage[][] = [];
+  private keyPackagesAvailable: number | null = null;
 
   constructor(private readonly options: RealtimeOptions) {}
 
@@ -96,6 +113,29 @@ export class Realtime {
         timer,
       });
       this.send({ ...frame, requestId } as ClientFrame);
+    });
+  }
+
+  /**
+   * Connects the message processor. Deliveries that arrived before it was
+   * ready are handed over now, so nothing is skipped.
+   */
+  setHandlers(handlers: RealtimeHandlers): void {
+    this.handlers = handlers;
+    if (this.state === "online" && this.keyPackagesAvailable !== null) handlers.onAuthenticated?.(this.keyPackagesAvailable);
+    for (const batch of this.buffered.splice(0)) handlers.onMessages?.(batch);
+  }
+
+  /** Sends an encrypted message; resolves when the server has stored it for the recipients. */
+  async sendMessage(frame: SendFrame): Promise<SentFrame> {
+    await this.online();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSends.delete(frame.id);
+        reject(new RealtimeError("timeout"));
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingSends.set(frame.id, { resolve, reject, timer });
+      this.send(frame);
     });
   }
 
@@ -150,6 +190,8 @@ export class Realtime {
     ws.onclose = (event: CloseEvent) => {
       if (this.ws !== ws) return;
       this.ws = undefined;
+      // Unacknowledged deliveries come again after reconnecting.
+      this.buffered = [];
       this.failPending(new RealtimeError("offline"));
       if (event.code === CloseCode.AuthFailed || event.code === CloseCode.DeviceRemoved) {
         // This phone is no longer part of the account (for example, after recovery elsewhere).
@@ -177,11 +219,24 @@ export class Realtime {
         return;
       case "authenticated":
         this.attempt = 0;
+        this.keyPackagesAvailable = frame.keyPackagesAvailable;
         this.setState("online");
+        this.handlers.onAuthenticated?.(frame.keyPackagesAvailable);
         return;
       case "deliver":
         this.options.onMessages?.(frame.messages);
+        if (this.handlers.onMessages) this.handlers.onMessages(frame.messages);
+        else this.buffered.push(frame.messages);
         return;
+      case "sent": {
+        const entry = this.pendingSends.get(frame.id);
+        if (entry) {
+          this.pendingSends.delete(frame.id);
+          clearTimeout(entry.timer);
+          entry.resolve(frame);
+        }
+        return;
+      }
       case "error":
         if (frame.requestId) this.settle(frame.requestId, undefined, new RealtimeError(frame.code));
         return;
@@ -200,10 +255,12 @@ export class Realtime {
   }
 
   private failPending(error: Error): void {
-    for (const [id, entry] of this.pending) {
-      clearTimeout(entry.timer);
-      entry.reject(error);
-      this.pending.delete(id);
+    for (const pending of [this.pending, this.pendingSends] as unknown as Map<string, { reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>[]) {
+      for (const [id, entry] of pending) {
+        clearTimeout(entry.timer);
+        entry.reject(error);
+        pending.delete(id);
+      }
     }
   }
 

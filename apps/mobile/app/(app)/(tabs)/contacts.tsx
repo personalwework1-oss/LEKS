@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { Icon } from "@/components/Icon";
 import { AppText, Avatar } from "@/components/ui";
+import { MessengerError } from "@/messaging/messenger";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -15,9 +16,32 @@ type Search = { phase: "idle" } | { phase: "searching" } | { phase: "done"; user
 export default function Contacts() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
-  const { realtime, session } = useSession();
+  const { realtime, session, messenger } = useSession();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<Search>({ phase: "idle" });
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  async function openChat(user: PublicUser) {
+    if (!messenger) {
+      setOpenError("Шифрование ещё запускается. Попробуйте через пару секунд.");
+      return;
+    }
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const id = await messenger.startChat(user);
+      router.push({ pathname: "/chat/[id]", params: { id } });
+    } catch (error) {
+      setOpenError(
+        error instanceof MessengerError && error.code === "no_devices"
+          ? `${user.displayName} пока не может получать сообщения: приложение у него ещё не подключилось к серверу.`
+          : "Не удалось начать чат. Проверьте интернет и попробуйте ещё раз.",
+      );
+    } finally {
+      setOpening(false);
+    }
+  }
 
   const handle = Username.safeParse(query.replace(/^@/, ""));
 
@@ -80,9 +104,8 @@ export default function Contacts() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Написать ${found.displayName}, @${found.username}`}
-            onPress={() =>
-              router.push({ pathname: "/chat/[accountId]", params: { accountId: found.accountId, name: found.displayName, username: found.username } })
-            }
+            disabled={opening}
+            onPress={() => void openChat(found)}
             style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 9, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
           >
             <Avatar name={found.displayName} seed={found.accountId} size={48} />
@@ -92,8 +115,13 @@ export default function Contacts() {
                 @{found.username} · написать
               </AppText>
             </View>
-            <Icon name="chevron" size={18} color={p.textSubtle} strokeWidth={2} />
+            {opening ? <ActivityIndicator color={p.textMuted} /> : <Icon name="chevron" size={18} color={p.textSubtle} strokeWidth={2} />}
           </Pressable>
+        ) : null}
+        {openError ? (
+          <AppText variant="caption" color={p.danger} style={{ paddingHorizontal: 20, paddingTop: 4 }} accessibilityLiveRegion="assertive">
+            {openError}
+          </AppText>
         ) : null}
 
         {isMe ? <Hint text="Это вы. Найдите другого человека." /> : null}

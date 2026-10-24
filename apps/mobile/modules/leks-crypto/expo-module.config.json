@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["LeksCryptoModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.lekscrypto.LeksCryptoModule"]
+  }
+}

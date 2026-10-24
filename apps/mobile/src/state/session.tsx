@@ -6,7 +6,11 @@ import type { AccountSession } from "@leks/protocol";
 import { HttpApi } from "../api/http";
 import { type ConnectionState, Realtime } from "../api/realtime";
 import { API_URL, APP_VERSION, WS_URL } from "../config";
+import { LeksCrypto } from "../../modules/leks-crypto";
 import { DeviceKey } from "../crypto/deviceKey";
+import { NativeEngine } from "../crypto/engine";
+import { identityOf, Messenger } from "../messaging/messenger";
+import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
 import { type LockSettings, NO_LOCK, secure, type StoredSession } from "../storage/secure";
 
@@ -32,6 +36,8 @@ interface SessionContext {
   session: StoredSession | null;
   connection: ConnectionState;
   realtime: Realtime | null;
+  /** Chats on this phone; null until the encryption core has opened (or where it is not built in). */
+  messenger: Messenger | null;
   lock: LockSettings;
   biometricLabel: string | null;
   register(input: { username: string; displayName: string; password: string }): Promise<void>;
@@ -59,11 +65,40 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [lock, setLockState] = useState<LockSettings>(NO_LOCK);
   const [connection, setConnection] = useState<ConnectionState>("offline");
   const [realtime, setRealtime] = useState<Realtime | null>(null);
+  const [messenger, setMessenger] = useState<Messenger | null>(null);
   const [biometricLabel, setBiometricLabel] = useState<string | null>(null);
   const lockRef = useRef(lock);
   useEffect(() => {
     lockRef.current = lock;
   }, [lock]);
+
+  // Open the encryption core and the chat database for this device, then connect them to the server.
+  useEffect(() => {
+    if (!session || !realtime || !LeksCrypto) return;
+    const native = LeksCrypto;
+    let cancelled = false;
+    (async () => {
+      const engine = new NativeEngine((request) => native.call(request), `${native.stateDirectory()}/${session.deviceId}.mls`);
+      await engine.open(identityOf(session));
+      const store = await SqliteStore.open(`leks-${session.deviceId}.db`);
+      if (cancelled) return;
+      const created = new Messenger(engine, realtime, store, session, () => Crypto.randomUUID());
+      realtime.setHandlers({
+        onMessages: (messages) => void created.onMessages(messages),
+        onAuthenticated: (available) => void created.onAuthenticated(available).catch((e) => console.warn("key packages", e)),
+      });
+      setMessenger(created);
+    })().catch((error) => console.warn("encryption core failed to open", error));
+    return () => {
+      cancelled = true;
+      setMessenger(null);
+    };
+  }, [session, realtime]);
+
+  // Retry the outbox whenever the connection comes back.
+  useEffect(() => {
+    if (connection === "online") void messenger?.flush();
+  }, [connection, messenger]);
 
   const startRealtime = useCallback((stored: StoredSession, key: DeviceKey) => {
     const client = new Realtime({
@@ -144,6 +179,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   async function signOutLocal() {
+    await messenger?.wipe().catch(() => undefined);
     setRealtime((previous) => {
       previous?.stop();
       return null;
@@ -161,6 +197,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       session,
       connection,
       realtime,
+      messenger,
       lock,
       biometricLabel,
       async register(input) {
@@ -211,7 +248,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       signOut: signOutLocal,
     }),
-    [status, onboarding, session, connection, realtime, lock, biometricLabel, adopt],
+    [status, onboarding, session, connection, realtime, messenger, lock, biometricLabel, adopt],
   );
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
