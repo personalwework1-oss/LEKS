@@ -47,6 +47,14 @@
         }
       ],
       [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraProguardRules": "# WebRTC for calls is called from native code; keep it whole.\n-keep class livekit.org.webrtc.** { *; }\n-keep class livekit.org.jni_zero.** { *; }\n-dontwarn livekit.org.jni_zero.**\n-keep class com.livekit.reactnative.** { *; }\n-keep class com.oney.WebRTCModule.** { *; }"
+          }
+        }
+      ],
+      [
         "@livekit/react-native-expo-plugin",
         { "android": { "audioType": "communication" } }
       ],
