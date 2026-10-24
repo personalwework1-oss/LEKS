@@ -36,6 +36,34 @@ export interface Message {
   deleted: boolean;
   /** One reaction per person: account id → emoji. */
   reactions: Record<string, string>;
+  /** A photo or file; `text` is then its caption. */
+  attachment: Attachment | null;
+}
+
+export type AttachmentKind = "image" | "video" | "file";
+
+/**
+ * Where an attachment is:
+ * uploading → sent (mine), or remote → downloading → ready (theirs); failed if a step did not work.
+ */
+export type AttachmentState = "uploading" | "sent" | "remote" | "downloading" | "ready" | "failed";
+
+export interface Attachment {
+  kind: AttachmentKind;
+  name: string;
+  mime: string;
+  /** Size of the original file in bytes. */
+  size: number;
+  width: number | null;
+  height: number | null;
+  /** A tiny JPEG preview (base64) shown until the real image is here. */
+  thumb: string | null;
+  /** Where the encrypted copy is on the server, and its key (base64url); null until uploaded. */
+  blobId: string | null;
+  key: string | null;
+  /** The decrypted file on this phone. */
+  localUri: string | null;
+  state: AttachmentState;
 }
 
 /** Something waiting to go to the server, kept until the server confirms it. */
@@ -61,6 +89,8 @@ export interface MessageStore {
   addMessage(message: Message): Promise<boolean>;
   /** Sets the status unless the message already has a later one. */
   setStatus(messageId: string, status: MessageStatus): Promise<void>;
+  /** My messages whose file is still being uploaded (to resume after a restart). */
+  pendingUploads(): Promise<Message[]>;
   updateMessage(message: Message): Promise<void>;
   /** Removes a message from this phone only. */
   removeMessage(id: string): Promise<void>;
@@ -77,6 +107,23 @@ export interface MessageStore {
 export type Payload =
   | { v: 1; type: "intro"; accountId: string; displayName: string; username: string }
   | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string }
+  | {
+      v: 1;
+      type: "file";
+      id: string;
+      sentAt: number;
+      replyTo?: string;
+      caption: string;
+      blobId: string;
+      key: string;
+      kind: AttachmentKind;
+      name: string;
+      mime: string;
+      size: number;
+      width?: number;
+      height?: number;
+      thumb?: string;
+    }
   | { v: 1; type: "receipt"; state: "delivered" | "read"; ids: string[] }
   | { v: 1; type: "edit"; id: string; text: string; editedAt: number }
   | { v: 1; type: "delete"; id: string }

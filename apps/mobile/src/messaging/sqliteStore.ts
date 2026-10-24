@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import { type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
+import { type Attachment, type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_to TEXT,
   edited_at INTEGER,
   deleted INTEGER NOT NULL DEFAULT 0,
-  reactions TEXT NOT NULL DEFAULT '{}'
+  reactions TEXT NOT NULL DEFAULT '{}',
+  attachment TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation_id, sent_at);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -43,6 +44,7 @@ const UPGRADES: string[] = [
    ALTER TABLE messages ADD COLUMN edited_at INTEGER;
    ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}';`,
+  `ALTER TABLE messages ADD COLUMN attachment TEXT;`,
 ];
 
 interface ConversationRow {
@@ -67,6 +69,7 @@ interface MessageRow {
   edited_at: number | null;
   deleted: number;
   reactions: string;
+  attachment: string | null;
 }
 
 interface OutboxRow {
@@ -100,7 +103,17 @@ const toMessage = (r: MessageRow): Message => ({
   editedAt: r.edited_at,
   deleted: r.deleted === 1,
   reactions: parseReactions(r.reactions),
+  attachment: parseAttachment(r.attachment),
 });
+
+function parseAttachment(json: string | null): Attachment | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as Attachment;
+  } catch {
+    return null;
+  }
+}
 
 function parseReactions(json: string): Record<string, string> {
   try {
@@ -177,9 +190,22 @@ export class SqliteStore implements MessageStore {
 
   async addMessage(m: Message) {
     const result = await this.db.runAsync(
-      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [m.id, m.conversationId, m.senderAccountId, m.outgoing ? 1 : 0, m.text, m.sentAt, m.status, m.replyTo, m.editedAt, m.deleted ? 1 : 0, JSON.stringify(m.reactions)],
+      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions, attachment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        m.id,
+        m.conversationId,
+        m.senderAccountId,
+        m.outgoing ? 1 : 0,
+        m.text,
+        m.sentAt,
+        m.status,
+        m.replyTo,
+        m.editedAt,
+        m.deleted ? 1 : 0,
+        JSON.stringify(m.reactions),
+        m.attachment ? JSON.stringify(m.attachment) : null,
+      ],
     );
     return result.changes > 0;
   }
@@ -194,19 +220,21 @@ export class SqliteStore implements MessageStore {
   }
 
   async updateMessage(m: Message) {
-    await this.db.runAsync("UPDATE messages SET text = ?, status = ?, reply_to = ?, edited_at = ?, deleted = ?, reactions = ? WHERE id = ?", [
-      m.text,
-      m.status,
-      m.replyTo,
-      m.editedAt,
-      m.deleted ? 1 : 0,
-      JSON.stringify(m.reactions),
-      m.id,
-    ]);
+    await this.db.runAsync(
+      "UPDATE messages SET text = ?, status = ?, reply_to = ?, edited_at = ?, deleted = ?, reactions = ?, attachment = ? WHERE id = ?",
+      [m.text, m.status, m.replyTo, m.editedAt, m.deleted ? 1 : 0, JSON.stringify(m.reactions), m.attachment ? JSON.stringify(m.attachment) : null, m.id],
+    );
   }
 
   async removeMessage(id: string) {
     await this.db.runAsync("DELETE FROM messages WHERE id = ?", [id]);
+  }
+
+  async pendingUploads() {
+    const rows = await this.db.getAllAsync<MessageRow>(
+      "SELECT * FROM messages WHERE outgoing = 1 AND json_extract(attachment, '$.state') = 'uploading' ORDER BY sent_at ASC",
+    );
+    return rows.map(toMessage);
   }
 
   async unreadIncoming(conversationId: string) {

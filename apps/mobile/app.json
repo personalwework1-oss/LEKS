@@ -32,6 +32,14 @@
         { "faceIDPermission": "Face ID защищает вход в LEKS." }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "LEKS открывает фото и видео, только когда вы сами выбираете их для отправки.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#141416",

@@ -1,8 +1,21 @@
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DeliveredMessage, PublicUser } from "@leks/protocol";
 import { toBase64url } from "@leks/protocol";
 import { type Engine, type Received, utf8Decode, utf8Encode } from "../src/crypto/engine";
+import { type FileIO, safeName } from "../src/messaging/files";
 import { MemoryStore } from "../src/messaging/memoryStore";
-import { decodePayload, identityOf, type Me, Messenger, MessengerError, parseIdentity, type Transport } from "../src/messaging/messenger";
+import {
+  decodePayload,
+  identityOf,
+  type Me,
+  Messenger,
+  MessengerError,
+  type OutgoingFile,
+  parseIdentity,
+  type Transport,
+} from "../src/messaging/messenger";
 
 /**
  * A stand-in for the Rust core: keeps the same shape of results so the
@@ -61,6 +74,59 @@ class FakeEngine implements Engine {
   async members(groupId: string) {
     return this.groups.get(groupId) ?? [];
   }
+  private fileCounter = 0;
+  /** Not real encryption: scrambles the bytes and prefixes the key, enough to test the flow. */
+  async encryptFile(input: string, output: string) {
+    const key = `key-${this.identity}-${++this.fileCounter}`;
+    const data = readFileSync(input).map((b) => b ^ 0x5a);
+    writeFileSync(output, Buffer.concat([Buffer.from(`${key}\n`), data]));
+    return { key, size: statSync(output).size };
+  }
+  async decryptFile(input: string, output: string, key: string) {
+    const data = readFileSync(input);
+    const header = Buffer.from(`${key}\n`);
+    if (!data.subarray(0, header.length).equals(header)) throw new Error("wrong key");
+    writeFileSync(output, data.subarray(header.length).map((b) => b ^ 0x5a));
+  }
+}
+
+/** Files in a temporary folder; the "server" keeps uploaded blobs in its own folder. */
+class TempFiles implements FileIO {
+  private counter = 0;
+  constructor(
+    readonly dir: string,
+    private readonly server: FakeServer,
+  ) {
+    mkdirSync(join(dir, "media"), { recursive: true });
+  }
+  tempUri() {
+    return join(this.dir, `tmp-${++this.counter}.enc`);
+  }
+  mediaUri(messageId: string, name: string) {
+    return join(this.dir, "media", `${messageId}-${safeName(name)}`);
+  }
+  async copy(from: string, to: string) {
+    copyFileSync(from, to);
+  }
+  async upload(blobId: string, token: string, uri: string) {
+    if (this.server.failUploads) throw new Error("network");
+    const expected = this.server.tickets.get(blobId);
+    if (expected !== token) throw new Error("403");
+    this.server.tickets.delete(blobId);
+    this.server.blobs.set(blobId, readFileSync(uri));
+  }
+  async download(blobId: string, uri: string) {
+    const blob = this.server.blobs.get(blobId);
+    if (!blob) throw new Error("404");
+    writeFileSync(uri, blob);
+  }
+  async remove(uri: string) {
+    rmSync(uri, { force: true });
+  }
+  async clear() {
+    rmSync(join(this.dir, "media"), { recursive: true, force: true });
+    mkdirSync(join(this.dir, "media"), { recursive: true });
+  }
 }
 
 /** A tiny in-memory server: key packages, per-device queues, delivery to connected phones. */
@@ -69,6 +135,9 @@ class FakeServer {
   phones = new Map<string, Phone>();
   nextId = 1;
   sends: string[] = [];
+  tickets = new Map<string, string>();
+  blobs = new Map<string, Buffer>();
+  failUploads = false;
   /** One clock for everyone, so message order is the order things happened. */
   clock = 1_000;
   tick = () => (this.clock += 1000);
@@ -81,6 +150,7 @@ class Phone {
   readonly store = new MemoryStore();
   readonly engine: FakeEngine;
   readonly messenger: Messenger;
+  readonly files: TempFiles;
   private uuidCounter = 0;
 
   constructor(readonly server: FakeServer, readonly me: Me) {
@@ -106,6 +176,11 @@ class Phone {
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
         }
+        if (frame.type === "request_upload") {
+          const blobId = `blob-${server.nextId++}`;
+          server.tickets.set(blobId, `token-${blobId}`);
+          return { type: "upload_ready", requestId: "r", blobId, token: `token-${blobId}` };
+        }
         throw new Error(`unexpected ${frame.type}`);
       }) as Transport["request"],
       sendMessage: async (frame) => {
@@ -124,7 +199,8 @@ class Phone {
       },
       ack: (ids) => phone.acked.push(...ids),
     };
-    this.messenger = new Messenger(this.engine, transport, this.store, me, () => `${me.deviceId}-${++this.uuidCounter}`, server.tick);
+    this.files = new TempFiles(mkdtempSync(join(tmpdir(), `leks-${me.deviceId}-`)), server);
+    this.messenger = new Messenger(this.engine, transport, this.store, me, () => `${me.deviceId}-${++this.uuidCounter}`, server.tick, this.files);
   }
 
   /** Hands over what the server holds for this phone, as a `deliver` frame would. */
@@ -414,6 +490,112 @@ describe("message features", () => {
     }
     await b.deliver();
     expect((await b.messenger.messages(chatId)).map((m) => [m.text, m.reactions])).toEqual([["раз", {}]]);
+  });
+});
+
+describe("photos and files", () => {
+  function picked(phone: Phone, name: string, content: string, kind: OutgoingFile["kind"] = "image"): OutgoingFile {
+    const uri = join(phone.files.dir, `picked-${name}`);
+    writeFileSync(uri, content);
+    return { uri, name, mime: kind === "image" ? "image/jpeg" : "application/pdf", size: Buffer.byteLength(content), kind, width: 800, height: 600, thumb: "dGh1bWI" };
+  }
+
+  it("sends a photo that arrives and downloads by itself, never readable on the server", async () => {
+    const { a, b, server, chatId } = await chatting();
+    const photo = await a.messenger.sendFile(chatId, picked(a, "cat.jpg", "мяу-мяу photo bytes"), "Смотри");
+    expect(photo.attachment?.state).toBe("uploading");
+    await b.deliver();
+    await settle();
+
+    const mine = (await a.messenger.messages(chatId))[0]!;
+    expect(mine.attachment).toMatchObject({ state: "sent", blobId: expect.any(String), key: expect.any(String) });
+    const [blob] = [...server.blobs.values()];
+    expect(blob!.toString()).not.toContain("мяу");
+
+    const theirs = (await b.messenger.messages(chatId))[0]!;
+    expect(theirs).toMatchObject({ text: "Смотри", outgoing: false });
+    expect(theirs.attachment).toMatchObject({ kind: "image", state: "ready", name: "cat.jpg", width: 800, thumb: "dGh1bWI" });
+    expect(readFileSync(theirs.attachment!.localUri!, "utf8")).toBe("мяу-мяу photo bytes");
+    expect((await b.messenger.conversation(chatId))?.lastText).toBe("Смотри");
+  });
+
+  it("downloads other files only when asked", async () => {
+    const { a, b, chatId } = await chatting();
+    await a.messenger.sendFile(chatId, picked(a, "договор.pdf", "%PDF секрет", "file"));
+    await b.deliver();
+    await settle();
+    const [file] = await b.messenger.messages(chatId);
+    expect(file!.attachment).toMatchObject({ state: "remote", localUri: null });
+    expect((await b.messenger.conversation(chatId))?.lastText).toBe("📎 договор.pdf");
+
+    await b.messenger.download(file!.id);
+    const [ready] = await b.messenger.messages(chatId);
+    expect(ready!.attachment?.state).toBe("ready");
+    expect(readFileSync(ready!.attachment!.localUri!, "utf8")).toBe("%PDF секрет");
+  });
+
+  it("resumes an upload cut off by the network, and only then sends the message", async () => {
+    const { a, b, server, chatId } = await chatting();
+    a.online = false;
+    await a.messenger.sendFile(chatId, picked(a, "late.jpg", "later"));
+    await settle();
+    expect((await a.messenger.messages(chatId))[0]!.attachment?.state).toBe("uploading");
+    expect(server.blobs.size).toBe(0);
+
+    a.online = true;
+    await a.messenger.onAuthenticated(50);
+    await settle();
+    await b.deliver();
+    await settle();
+    expect((await b.messenger.messages(chatId))[0]!.attachment?.state).toBe("ready");
+  });
+
+  it("marks a failed upload and retries it on request", async () => {
+    const { a, b, server, chatId } = await chatting();
+    server.failUploads = true;
+    const sent = await a.messenger.sendFile(chatId, picked(a, "x.jpg", "x"));
+    await settle();
+    expect((await a.messenger.message(sent.id))?.attachment?.state).toBe("failed");
+    expect((await a.messenger.message(sent.id))?.status).toBe("failed");
+
+    server.failUploads = false;
+    await a.messenger.retryUpload(sent.id);
+    await settle();
+    expect((await a.messenger.message(sent.id))?.attachment?.state).toBe("sent");
+    await b.deliver();
+    expect(await b.messenger.messages(chatId)).toHaveLength(1);
+  });
+
+  it("refuses a tampered key and lets the person try again", async () => {
+    const { a, b, server, chatId } = await chatting();
+    await a.messenger.sendFile(chatId, picked(a, "doc.pdf", "data", "file"));
+    await b.deliver();
+    await settle();
+    const [file] = await b.messenger.messages(chatId);
+    server.blobs.set(file!.attachment!.blobId!, Buffer.from("garbage"));
+    await b.messenger.download(file!.id);
+    expect((await b.messenger.message(file!.id))?.attachment).toMatchObject({ state: "failed", localUri: null });
+  });
+
+  it("removes the file from the phone when the message is deleted", async () => {
+    const { a, b, chatId } = await chatting();
+    const sent = await a.messenger.sendFile(chatId, picked(a, "gone.jpg", "bye"));
+    await b.deliver();
+    await settle();
+    const theirs = (await b.messenger.message(sent.id))!;
+    expect(existsSync(theirs.attachment!.localUri!)).toBe(true);
+
+    await a.messenger.deleteForEveryone(sent.id);
+    await b.deliver();
+    expect(existsSync(theirs.attachment!.localUri!)).toBe(false);
+    expect(existsSync(sent.attachment!.localUri!)).toBe(false);
+    expect((await b.messenger.message(sent.id))).toMatchObject({ deleted: true, attachment: null });
+  });
+
+  it("rejects files that are too big before doing any work", async () => {
+    const { a, chatId } = await chatting();
+    const file = { ...picked(a, "huge.bin", "x", "file"), size: 200 * 1024 * 1024 };
+    await expect(a.messenger.sendFile(chatId, file)).rejects.toEqual(new MessengerError("too_large"));
   });
 });
 

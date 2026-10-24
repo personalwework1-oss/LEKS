@@ -22,6 +22,14 @@ export interface Engine {
   encrypt(groupId: string, plaintext: Uint8Array): Promise<string>;
   receive(message: string): Promise<Received>;
   members(groupId: string): Promise<string[]>;
+  /** Encrypts a file with a new key (base64url); returns the key and the encrypted size. */
+  encryptFile(inputUri: string, outputUri: string): Promise<{ key: string; size: number }>;
+  decryptFile(inputUri: string, outputUri: string, key: string): Promise<void>;
+}
+
+/** The core works with plain paths; the app with file:// URIs. */
+export function uriToPath(uri: string): string {
+  return uri.startsWith("file://") ? decodeURIComponent(uri.slice("file://".length)) : uri;
 }
 
 /** The Rust core through its JSON interface; `call` is the native module's entry point. */
@@ -69,6 +77,12 @@ export class NativeEngine implements Engine {
   }
   async members(groupId: string) {
     return (await this.run<{ members: string[] }>({ op: "members", groupId })).members;
+  }
+  encryptFile(inputUri: string, outputUri: string) {
+    return this.run<{ key: string; size: number }>({ op: "encrypt_file", input: uriToPath(inputUri), output: uriToPath(outputUri) });
+  }
+  async decryptFile(inputUri: string, outputUri: string, key: string) {
+    await this.run({ op: "decrypt_file", input: uriToPath(inputUri), output: uriToPath(outputUri), key });
   }
 }
 

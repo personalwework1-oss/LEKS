@@ -177,6 +177,34 @@ const icons = {
       <Path d="M9 7V4h6v3" />
     </>
   ),
+  download: (
+    <>
+      <Path d="M12 4v11" />
+      <Path d="M7 10.5l5 5 5-5" />
+      <Path d="M5 20h14" />
+    </>
+  ),
+  play: <Path d="M8 5.5v13l10.5-6.5z" />,
+  file: (
+    <>
+      <Path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <Path d="M14 3v5h5" />
+    </>
+  ),
+  share: (
+    <>
+      <Path d="M12 15V4" />
+      <Path d="M8 8l4-4 4 4" />
+      <Path d="M6 12v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-6" />
+    </>
+  ),
+  image: (
+    <>
+      <Rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <Circle cx="9" cy="10" r="1.8" />
+      <Path d="M20 16l-4.5-4.5L7 19.5" />
+    </>
+  ),
   close: (
     <>
       <Path d="M6 6l12 12" />

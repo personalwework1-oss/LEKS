@@ -1,7 +1,17 @@
-import type { DeliveredMessage, PublicUser } from "@leks/protocol";
+import { type DeliveredMessage, MAX_BLOB_BYTES, type PublicUser } from "@leks/protocol";
 import type { Realtime } from "../api/realtime";
 import { type Engine, utf8Decode, utf8Encode } from "../crypto/engine";
-import { type Conversation, type Message, type MessageStore, type OutboxItem, type Payload, REACTIONS } from "./types";
+import type { FileIO } from "./files";
+import {
+  type Attachment,
+  type AttachmentKind,
+  type Conversation,
+  type Message,
+  type MessageStore,
+  type OutboxItem,
+  type Payload,
+  REACTIONS,
+} from "./types";
 
 /** The part of the server connection the messenger uses (the Realtime client in the app). */
 export type Transport = Pick<Realtime, "connectionState" | "request" | "sendMessage" | "ack">;
@@ -14,7 +24,7 @@ export interface Me {
 }
 
 export class MessengerError extends Error {
-  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed") {
+  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed" | "too_large") {
     super(code);
   }
 }
@@ -28,6 +38,22 @@ const TYPING_SEND_EVERY_MS = 4000;
 /** A typing signal older than this (for example, delivered after being offline) is ignored. */
 const TYPING_STALE_MS = 15000;
 const MAX_TEXT = 4000;
+/** Photos up to this size download by themselves; bigger ones and other files on a tap. */
+const AUTO_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_THUMB = 12_000;
+const KINDS: AttachmentKind[] = ["image", "video", "file"];
+
+/** A file picked to send (already resized if it is a photo). */
+export interface OutgoingFile {
+  uri: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: AttachmentKind;
+  width: number | null;
+  height: number | null;
+  thumb: string | null;
+}
 
 export const identityOf = (me: { accountId: string; deviceId: string }) => `${me.accountId}:${me.deviceId}`;
 
@@ -58,6 +84,22 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
       return (value.state === "delivered" || value.state === "read") && Array.isArray(value.ids) && value.ids.every(isString)
         ? (value as Payload)
         : null;
+    case "file":
+      return isString(value.id) &&
+        typeof value.sentAt === "number" &&
+        isString(value.caption) &&
+        isString(value.blobId) &&
+        isString(value.key) &&
+        KINDS.includes(value.kind as AttachmentKind) &&
+        isString(value.name) &&
+        isString(value.mime) &&
+        typeof value.size === "number" &&
+        (value.replyTo === undefined || isString(value.replyTo)) &&
+        (value.width === undefined || typeof value.width === "number") &&
+        (value.height === undefined || typeof value.height === "number") &&
+        (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB))
+        ? (value as Payload)
+        : null;
     case "edit":
       return isString(value.id) && isString(value.text) && typeof value.editedAt === "number" ? (value as Payload) : null;
     case "delete":
@@ -74,7 +116,14 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
 }
 
 /** What the chat list shows for a message. */
-export const previewOf = (m: Message | null): string | null => (m ? (m.deleted ? "Сообщение удалено" : m.text) : null);
+export function previewOf(m: Message | null): string | null {
+  if (!m) return null;
+  if (m.deleted) return "Сообщение удалено";
+  if (m.attachment && !m.text) {
+    return m.attachment.kind === "image" ? "📷 Фото" : m.attachment.kind === "video" ? "🎬 Видео" : `📎 ${m.attachment.name}`;
+  }
+  return m.text;
+}
 
 /**
  * Chats on this phone: starting them, sending and receiving encrypted
@@ -99,7 +148,11 @@ export class Messenger {
     private readonly me: Me,
     private readonly uuid: () => string,
     private readonly now: () => number = Date.now,
+    private readonly files: FileIO | null = null,
   ) {}
+
+  /** Attachments being uploaded or downloaded right now (message ids). */
+  private readonly transfers = new Set<string>();
 
   get identity(): string {
     return identityOf(this.me);
@@ -127,6 +180,10 @@ export class Messenger {
     return this.store.messages(conversationId);
   }
 
+  message(id: string): Promise<Message | null> {
+    return this.store.message(id);
+  }
+
   /** Marks the chat read here and tells the other side which messages were read. */
   async markRead(conversationId: string): Promise<void> {
     const unread = await this.store.unreadIncoming(conversationId);
@@ -150,6 +207,8 @@ export class Messenger {
       await this.transport.request({ type: "publish_key_packages", keyPackages }, "key_packages_published");
     }
     await this.flush();
+    // Uploads cut off by a lost connection or a closed app continue now.
+    for (const message of await this.store.pendingUploads()) void this.upload(message.id);
   }
 
   /** Messages from the server, processed strictly in order, then confirmed. */
@@ -238,6 +297,7 @@ export class Messenger {
           editedAt: null,
           deleted: false,
           reactions: {},
+          attachment: null,
         });
         if (!added) return null;
         // A message I sent from another of my phones is not unread and needs no receipt.
@@ -252,6 +312,46 @@ export class Messenger {
         return mine ? null : { conversationId: conversation.id, id: payload.id };
       }
 
+      case "file": {
+        const mine = sender.accountId === this.me.accountId;
+        const message: Message = {
+          id: payload.id,
+          conversationId: conversation.id,
+          senderAccountId: sender.accountId,
+          outgoing: mine,
+          text: payload.caption.slice(0, MAX_TEXT),
+          sentAt: payload.sentAt,
+          status: mine ? "sent" : "received",
+          replyTo: payload.replyTo ?? null,
+          editedAt: null,
+          deleted: false,
+          reactions: {},
+          attachment: {
+            kind: payload.kind,
+            name: payload.name.slice(0, 200),
+            mime: payload.mime.slice(0, 100),
+            size: payload.size,
+            width: payload.width ?? null,
+            height: payload.height ?? null,
+            thumb: payload.thumb ?? null,
+            blobId: payload.blobId,
+            key: payload.key,
+            localUri: null,
+            state: "remote",
+          },
+        };
+        if (!(await this.store.addMessage(message))) return null;
+        if (!mine) this.stopTyping(conversation.id);
+        await this.store.saveConversation({
+          ...conversation,
+          lastText: previewOf(message),
+          lastAt: Math.max(conversation.lastAt, payload.sentAt),
+          unread: conversation.unread + (mine ? 0 : 1),
+        });
+        if (payload.kind === "image" && payload.size <= AUTO_DOWNLOAD_BYTES) void this.download(message.id);
+        return mine ? null : { conversationId: conversation.id, id: payload.id };
+      }
+
       case "receipt":
         // Receipts are about my messages, sent by the other side.
         if (!fromPeer) return null;
@@ -261,7 +361,23 @@ export class Messenger {
         }
         return null;
 
-      case "edit": {
+      case "file":
+      return isString(value.id) &&
+        typeof value.sentAt === "number" &&
+        isString(value.caption) &&
+        isString(value.blobId) &&
+        isString(value.key) &&
+        KINDS.includes(value.kind as AttachmentKind) &&
+        isString(value.name) &&
+        isString(value.mime) &&
+        typeof value.size === "number" &&
+        (value.replyTo === undefined || isString(value.replyTo)) &&
+        (value.width === undefined || typeof value.width === "number") &&
+        (value.height === undefined || typeof value.height === "number") &&
+        (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB))
+        ? (value as Payload)
+        : null;
+    case "edit": {
         const target = await this.store.message(payload.id);
         if (!target || target.deleted || target.conversationId !== conversation.id || target.senderAccountId !== sender.accountId) return null;
         await this.store.updateMessage({ ...target, text: payload.text.slice(0, MAX_TEXT), editedAt: payload.editedAt });
@@ -272,7 +388,15 @@ export class Messenger {
       case "delete": {
         const target = await this.store.message(payload.id);
         if (!target || target.conversationId !== conversation.id || target.senderAccountId !== sender.accountId) return null;
-        await this.store.updateMessage({ ...target, text: "", deleted: true, reactions: {}, status: target.status === "received" ? "read" : target.status });
+        if (target.attachment?.localUri) await this.files?.remove(target.attachment.localUri).catch(() => undefined);
+        await this.store.updateMessage({
+          ...target,
+          text: "",
+          deleted: true,
+          reactions: {},
+          attachment: null,
+          status: target.status === "received" ? "read" : target.status,
+        });
         await this.refreshPreview(conversation.id, target.status === "received" ? 1 : 0);
         return null;
       }
@@ -377,6 +501,7 @@ export class Messenger {
       editedAt: null,
       deleted: false,
       reactions: {},
+      attachment: null,
     };
     const payload: Payload = { v: 1, type: "text", id: message.id, text: body, sentAt: message.sentAt, ...(replyTo ? { replyTo } : {}) };
 
@@ -385,6 +510,158 @@ export class Messenger {
     this.typingSentAt.delete(conversationId);
     await this.sendPayload(conversationId, payload, message.id, message.id);
     return message;
+  }
+
+  /**
+   * Sends a photo or file: it shows up right away while it is encrypted and
+   * uploaded; the message with its key goes out once the upload is done.
+   */
+  async sendFile(conversationId: string, file: OutgoingFile, caption = "", replyTo: string | null = null): Promise<Message> {
+    if (!this.files) throw new MessengerError("not_ready");
+    if (file.size > MAX_BLOB_BYTES - 1024 * 1024) throw new MessengerError("too_large");
+    const conversation = await this.store.conversation(conversationId);
+    if (!conversation) throw new MessengerError("unknown_chat");
+
+    const id = this.uuid();
+    const localUri = this.files.mediaUri(id, file.name);
+    await this.files.copy(file.uri, localUri);
+    const message: Message = {
+      id,
+      conversationId,
+      senderAccountId: this.me.accountId,
+      outgoing: true,
+      text: caption.slice(0, MAX_TEXT),
+      sentAt: this.now(),
+      status: "sending",
+      replyTo,
+      editedAt: null,
+      deleted: false,
+      reactions: {},
+      attachment: {
+        kind: file.kind,
+        name: file.name,
+        mime: file.mime,
+        size: file.size,
+        width: file.width,
+        height: file.height,
+        thumb: file.thumb && file.thumb.length <= MAX_THUMB ? file.thumb : null,
+        blobId: null,
+        key: null,
+        localUri,
+        state: "uploading",
+      },
+    };
+    await this.store.addMessage(message);
+    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt });
+    this.changed();
+    void this.upload(id);
+    return message;
+  }
+
+  /** Tries a failed upload again. */
+  async retryUpload(messageId: string): Promise<void> {
+    const message = await this.store.message(messageId);
+    if (!message?.outgoing || !message.attachment || message.attachment.state !== "failed") return;
+    await this.store.updateMessage({ ...message, status: "sending", attachment: { ...message.attachment, state: "uploading" } });
+    this.changed();
+    await this.upload(messageId);
+  }
+
+  /** Encrypts, uploads, then sends the key. Stays "uploading" if the network drops, to be resumed. */
+  private async upload(messageId: string): Promise<void> {
+    if (!this.files || this.transfers.has(messageId)) return;
+    this.transfers.add(messageId);
+    const files = this.files;
+    const encrypted = files.tempUri();
+    try {
+      const message = await this.store.message(messageId);
+      const attachment = message?.attachment;
+      if (!message || !attachment?.localUri || attachment.state !== "uploading" || message.deleted) return;
+      if (this.transport.connectionState !== "online") return;
+
+      const { key, size } = await this.engine.encryptFile(attachment.localUri, encrypted);
+      let ticket;
+      try {
+        ticket = await this.transport.request({ type: "request_upload", size }, "upload_ready");
+      } catch (error) {
+        if ((error as { code?: string }).code === "upload_quota_exceeded" || (error as { code?: string }).code === "bad_frame") {
+          await this.failUpload(messageId);
+        }
+        return;
+      }
+      await files.upload(ticket.blobId, ticket.token, encrypted);
+
+      const latest = await this.store.message(messageId);
+      if (!latest?.attachment || latest.deleted) return;
+      const sent: Attachment = { ...latest.attachment, blobId: ticket.blobId, key, state: "sent" };
+      await this.store.updateMessage({ ...latest, attachment: sent });
+      const payload: Payload = {
+        v: 1,
+        type: "file",
+        id: latest.id,
+        sentAt: latest.sentAt,
+        ...(latest.replyTo ? { replyTo: latest.replyTo } : {}),
+        caption: latest.text,
+        blobId: ticket.blobId,
+        key,
+        kind: sent.kind,
+        name: sent.name,
+        mime: sent.mime,
+        size: sent.size,
+        ...(sent.width ? { width: sent.width } : {}),
+        ...(sent.height ? { height: sent.height } : {}),
+        ...(sent.thumb ? { thumb: sent.thumb } : {}),
+      };
+      await this.sendPayload(latest.conversationId, payload, latest.id);
+    } catch (error) {
+      // Network trouble leaves it "uploading" for the next connection; anything else is a failure.
+      if (this.transport.connectionState === "online") {
+        console.warn("upload failed", error);
+        await this.failUpload(messageId);
+      }
+    } finally {
+      this.transfers.delete(messageId);
+      await files.remove(encrypted).catch(() => undefined);
+      this.changed();
+    }
+  }
+
+  private async failUpload(messageId: string) {
+    const message = await this.store.message(messageId);
+    if (!message?.attachment) return;
+    await this.store.updateMessage({ ...message, status: "failed", attachment: { ...message.attachment, state: "failed" } });
+  }
+
+  /** Fetches and decrypts a received photo or file. */
+  async download(messageId: string): Promise<void> {
+    if (!this.files || this.transfers.has(messageId)) return;
+    const message = await this.store.message(messageId);
+    const attachment = message?.attachment;
+    if (!message || !attachment?.blobId || !attachment.key || attachment.state === "ready" || message.deleted) return;
+    this.transfers.add(messageId);
+    const files = this.files;
+    const encrypted = files.tempUri();
+    await this.store.updateMessage({ ...message, attachment: { ...attachment, state: "downloading" } });
+    this.changed();
+    try {
+      await files.download(attachment.blobId, encrypted);
+      const localUri = files.mediaUri(message.id, attachment.name);
+      await this.engine.decryptFile(encrypted, localUri, attachment.key);
+      const latest = await this.store.message(messageId);
+      if (!latest?.attachment || latest.deleted) {
+        await files.remove(localUri);
+        return;
+      }
+      await this.store.updateMessage({ ...latest, attachment: { ...latest.attachment, localUri, state: "ready" } });
+    } catch (error) {
+      console.warn("download failed", error);
+      const latest = await this.store.message(messageId);
+      if (latest?.attachment) await this.store.updateMessage({ ...latest, attachment: { ...latest.attachment, state: "failed" } });
+    } finally {
+      this.transfers.delete(messageId);
+      await files.remove(encrypted).catch(() => undefined);
+      this.changed();
+    }
   }
 
   /** Changes the text of my own message, here and on the other side. */
@@ -401,7 +678,8 @@ export class Messenger {
   /** Deletes my own message for both sides. */
   async deleteForEveryone(messageId: string): Promise<void> {
     const message = await this.ownMessage(messageId);
-    await this.store.updateMessage({ ...message, text: "", deleted: true, reactions: {} });
+    if (message.attachment?.localUri) await this.files?.remove(message.attachment.localUri).catch(() => undefined);
+    await this.store.updateMessage({ ...message, text: "", deleted: true, reactions: {}, attachment: null });
     await this.refreshPreview(message.conversationId);
     await this.sendPayload(message.conversationId, { v: 1, type: "delete", id: messageId }, null);
   }
@@ -410,6 +688,7 @@ export class Messenger {
   async deleteForMe(messageId: string): Promise<void> {
     const message = await this.store.message(messageId);
     if (!message) return;
+    if (message.attachment?.localUri) await this.files?.remove(message.attachment.localUri).catch(() => undefined);
     await this.store.removeMessage(messageId);
     await this.refreshPreview(message.conversationId, !message.outgoing && message.status === "received" ? 1 : 0);
     this.changed();
@@ -529,6 +808,7 @@ export class Messenger {
     this.typingTimers.clear();
     this.typingUntil.clear();
     await this.store.clear();
+    await this.files?.clear().catch(() => undefined);
     await this.engine.reset();
     this.changed();
   }

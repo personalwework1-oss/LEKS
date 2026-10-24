@@ -23,15 +23,15 @@ export class MemoryStore implements MessageStore {
       .filter((m) => m.conversationId === conversationId)
       .sort((a, b) => a.sentAt - b.sentAt)
       .slice(-limit)
-      .map((m) => ({ ...m, reactions: { ...m.reactions } }));
+      .map((m) => this.copy(m));
   }
   async message(id: string) {
     const message = this.msgs.get(id);
-    return message ? { ...message, reactions: { ...message.reactions } } : null;
+    return message ? this.copy(message) : null;
   }
   async addMessage(message: Message) {
     if (this.msgs.has(message.id)) return false;
-    this.msgs.set(message.id, { ...message, reactions: { ...message.reactions } });
+    this.msgs.set(message.id, this.copy(message));
     return true;
   }
   async setStatus(messageId: string, status: MessageStatus) {
@@ -39,10 +39,19 @@ export class MemoryStore implements MessageStore {
     if (message && (STATUS_RANK[status] > STATUS_RANK[message.status] || status === "failed")) message.status = status;
   }
   async updateMessage(message: Message) {
-    if (this.msgs.has(message.id)) this.msgs.set(message.id, { ...message, reactions: { ...message.reactions } });
+    if (this.msgs.has(message.id)) this.msgs.set(message.id, this.copy(message));
   }
   async removeMessage(id: string) {
     this.msgs.delete(id);
+  }
+  async pendingUploads() {
+    return [...this.msgs.values()]
+      .filter((m) => m.outgoing && m.attachment?.state === "uploading")
+      .sort((a, b) => a.sentAt - b.sentAt)
+      .map((m) => this.copy(m));
+  }
+  private copy(m: Message): Message {
+    return { ...m, reactions: { ...m.reactions }, attachment: m.attachment ? { ...m.attachment } : null };
   }
   async unreadIncoming(conversationId: string) {
     return (await this.messages(conversationId, Number.MAX_SAFE_INTEGER)).filter((m) => !m.outgoing && m.status === "received");

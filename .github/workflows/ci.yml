@@ -208,7 +208,7 @@ jobs:
   report:
     name: Report
     if: always() && github.event_name == 'push'
-    needs: [node, mobile, android-app, ios-app, rust]
+    needs: [node, mobile, rust]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,10 +226,10 @@ jobs:
             echo "# CI report for $SHA"
             echo
             gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
-              --jq '.jobs[] | select(.name != "Report") | "- \(.name): \(.conclusion // .status)"'
+              --jq '.jobs[] | select(.status == "completed" and (.name | startswith("Report") | not)) | "- \(.name): \(.conclusion // .status)"'
           } > README.md
           gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
-            --jq '.jobs[] | select(.name != "Report") | "\(.id)\t\(.conclusion)\t\(.name)"' |
+            --jq '.jobs[] | select(.status == "completed" and (.name | startswith("Report") | not)) | "\(.id)\t\(.conclusion)\t\(.name)"' |
           while IFS=$'\t' read -r id conclusion name; do
             curl -sSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$REPO/actions/jobs/$id/logs" -o "job-$id.full" \
@@ -251,3 +251,50 @@ jobs:
           git add -A
           git commit -qm "CI report for $SHA"
           git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:ci-logs
+
+  report-builds:
+    name: Report (app builds)
+    if: always() && github.event_name == 'push'
+    needs: [android-app, ios-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Publish results and failed logs to the ci-logs branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir report && cd report
+          {
+            echo "# CI report for $SHA"
+            echo
+            gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+              --jq '.jobs[] | select(.name | test("app")) | "- \(.name): \(.conclusion // .status)"'
+          } > README.md
+          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+            --jq '.jobs[] | select(.name | test("app")) | "\(.id)\t\(.conclusion)\t\(.name)"' |
+          while IFS=$'\t' read -r id conclusion name; do
+            curl -sSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/actions/jobs/$id/logs" -o "job-$id.full" \
+              || echo "could not download the log of job $id" >> README.md
+            {
+              echo
+              echo "## $name ($conclusion)"
+              echo
+              echo '```'
+              grep -E "test result:|Tests +[0-9]|Tests:|Test Suites:|Test Files|✓|✗|×|FAIL|libleks_crypto\.(so|a)|app-release" "job-$id.full" | sed -E 's/^[0-9TZ:.-]+ //' | tail -n 60 || true
+              echo '```'
+            } >> README.md
+            if [ "$conclusion" = "failure" ]; then tail -n 400 "job-$id.full" > "job-$id.log"; fi
+            rm -f "job-$id.full"
+          done
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "CI report for $SHA"
+          git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:ci-logs-builds

@@ -4,9 +4,12 @@ import { router, useLocalSearchParams } from "expo-router";
 import { type ComponentRef, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AttachmentView } from "@/components/AttachmentView";
 import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar, IconButton } from "@/components/ui";
+import { pickDocuments, pickFromGallery } from "@/features/attachments";
 import { clockTime, dayKey, dayLabel } from "@/format";
+import { MessengerError, previewOf } from "@/messaging/messenger";
 import { useConversation, useMessages, useTyping } from "@/messaging/hooks";
 import { type Message, REACTIONS } from "@/messaging/types";
 import { useSession } from "@/state/session";
@@ -27,6 +30,8 @@ export default function Chat() {
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<Mode>(null);
   const [menuFor, setMenuFor] = useState<Message | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
 
   // Opening the chat marks it read; so does every new message while it is open.
@@ -71,6 +76,28 @@ export default function Chat() {
       console.warn("send failed", error);
       setDraft(text);
       setMode(current);
+    }
+  }
+
+  /** Picks photos or files and sends each; the draft becomes the caption of a single one. */
+  async function attach(source: "gallery" | "files") {
+    setAttachOpen(false);
+    setAttachError(null);
+    if (!messenger) return;
+    try {
+      const files = source === "gallery" ? await pickFromGallery() : await pickDocuments();
+      if (files.length === 0) return;
+      const caption = files.length === 1 && mode?.kind !== "edit" ? draft.trim() : "";
+      const replyTo = mode?.kind === "reply" ? mode.message.id : null;
+      if (caption) setDraft("");
+      if (mode?.kind === "reply") setMode(null);
+      for (const [i, file] of files.entries()) await messenger.sendFile(id, file, i === 0 ? caption : "", i === 0 ? replyTo : null);
+    } catch (error) {
+      setAttachError(
+        error instanceof MessengerError && error.code === "too_large"
+          ? "Файл больше 99 МБ — такой пока не отправить."
+          : "Не удалось подготовить файл. Попробуйте ещё раз.",
+      );
     }
   }
 
@@ -142,6 +169,8 @@ export default function Chat() {
                 setMenuFor(item.message);
               }}
               onReact={(emoji) => void messenger?.react(item.message.id, emoji)}
+              onDownload={() => void messenger?.download(item.message.id)}
+              onRetry={() => void messenger?.retryUpload(item.message.id)}
             />
           )
         }
@@ -164,13 +193,19 @@ export default function Chat() {
                 {mode.kind === "edit" ? "Редактирование" : mode.message.outgoing ? "Ответ себе" : `Ответ ${title}`}
               </AppText>
               <AppText variant="caption" muted numberOfLines={1}>
-                {mode.message.text}
+                {previewOf(mode.message)}
               </AppText>
             </View>
             <IconButton icon="close" label={mode.kind === "edit" ? "Отменить редактирование" : "Отменить ответ"} tone="plain" onPress={cancelMode} />
           </View>
         ) : null}
+        {attachError ? (
+          <AppText variant="caption" color={p.danger} style={{ paddingHorizontal: 16, paddingTop: 8 }} accessibilityLiveRegion="assertive">
+            {attachError}
+          </AppText>
+        ) : null}
         <View style={{ paddingTop: 8, paddingHorizontal: 10, paddingBottom: Math.max(insets.bottom, 10), flexDirection: "row", alignItems: "flex-end", gap: 6 }}>
+          {mode?.kind === "edit" ? null : <IconButton icon="paperclip" label="Прикрепить фото или файл" tone="plain" onPress={() => setAttachOpen(true)} />}
           <View style={{ flex: 1, minHeight: 44, borderRadius: 22, backgroundColor: p.surfaceMuted, justifyContent: "center", paddingHorizontal: 16 }}>
             <TextInput
               ref={input}
@@ -189,6 +224,8 @@ export default function Chat() {
           </View>
         </View>
       </View>
+
+      <AttachMenu visible={attachOpen} onClose={() => setAttachOpen(false)} onPick={(source) => void attach(source)} />
 
       <MessageMenu
         message={menuFor}
@@ -235,6 +272,8 @@ function Bubble({
   peerName,
   onLongPress,
   onReact,
+  onDownload,
+  onRetry,
 }: {
   message: Message;
   /** The message this one answers; "missing" if it is not on this phone. */
@@ -243,6 +282,8 @@ function Bubble({
   peerName: string;
   onLongPress: () => void;
   onReact: (emoji: string) => void;
+  onDownload: () => void;
+  onRetry: () => void;
 }) {
   const p = usePalette();
   const out = message.outgoing;
@@ -261,7 +302,7 @@ function Bubble({
 
   const label = message.deleted
     ? "Сообщение удалено"
-    : `${out ? "Вы" : peerName}: ${message.text}. ${clockTime(message.sentAt)}.${message.editedAt ? " Изменено." : ""} ${STATUS_LABEL[message.status]}`;
+    : `${out ? "Вы" : peerName}: ${previewOf(message)}. ${clockTime(message.sentAt)}.${message.editedAt ? " Изменено." : ""} ${STATUS_LABEL[message.status]}`;
 
   return (
     <View style={{ alignItems: out ? "flex-end" : "flex-start" }}>
@@ -299,20 +340,23 @@ function Bubble({
               {quoted === "missing" ? "Сообщение" : quoted.outgoing ? "Вы" : peerName}
             </AppText>
             <AppText variant="caption" color={meta} numberOfLines={2}>
-              {quoted === "missing" ? "недоступно на этом телефоне" : quoted.deleted ? "Сообщение удалено" : quoted.text}
+              {quoted === "missing" ? "недоступно на этом телефоне" : previewOf(quoted)}
             </AppText>
           </View>
         ) : null}
 
+        {message.attachment && !message.deleted ? (
+          <AttachmentView attachment={message.attachment} outgoing={out} onDownload={onDownload} onRetry={onRetry} />
+        ) : null}
         {message.deleted ? (
           <AppText color={fg} style={{ fontStyle: "italic" }}>
             Сообщение удалено
           </AppText>
-        ) : (
+        ) : message.text ? (
           <AppText color={fg} selectable>
             {message.text}
           </AppText>
-        )}
+        ) : null}
 
         <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 4, marginTop: 2 }}>
           {message.editedAt && !message.deleted ? (
@@ -394,11 +438,11 @@ function MessageMenu({
   const insets = useSafeAreaInsets();
   const own = !!message?.outgoing;
   const actions: { icon: IconName; label: string; onPress: () => void; danger?: boolean }[] = [
-    { icon: "reply", label: "Ответить", onPress: onReply },
-    { icon: "copy", label: "Копировать", onPress: onCopy },
+    { icon: "reply" as const, label: "Ответить", onPress: onReply },
+    ...(message?.text ? [{ icon: "copy" as const, label: "Копировать", onPress: onCopy }] : []),
     ...(own ? [{ icon: "edit" as const, label: "Изменить", onPress: onEdit }] : []),
     ...(own ? [{ icon: "trash" as const, label: "Удалить у всех", onPress: onDeleteForEveryone, danger: true }] : []),
-    { icon: "trash", label: "Удалить у меня", onPress: onDeleteForMe, danger: true },
+    { icon: "trash" as const, label: "Удалить у меня", onPress: onDeleteForMe, danger: true },
   ];
 
   return (
@@ -410,7 +454,7 @@ function MessageMenu({
           style={{ backgroundColor: p.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 14, paddingBottom: Math.max(insets.bottom, 14) }}
         >
           <AppText muted numberOfLines={2} style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
-            {message?.text}
+            {previewOf(message)}
           </AppText>
           <View style={{ flexDirection: "row", justifyContent: "space-around", paddingHorizontal: 12, paddingBottom: 10 }}>
             {REACTIONS.map((emoji) => {
@@ -446,6 +490,45 @@ function MessageMenu({
             >
               <Icon name={action.icon} size={22} color={action.danger ? p.danger : p.text} strokeWidth={1.9} />
               <AppText color={action.danger ? p.danger : p.text}>{action.label}</AppText>
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (source: "gallery" | "files") => void }) {
+  const p = usePalette();
+  const insets = useSafeAreaInsets();
+  const options: { source: "gallery" | "files"; icon: IconName; label: string; hint: string }[] = [
+    { source: "gallery", icon: "image", label: "Фото или видео", hint: "Фото сжимаются, геометки удаляются" },
+    { source: "files", icon: "file", label: "Файл", hint: "Отправляется как есть, до 99 МБ" },
+  ];
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <Pressable accessibilityLabel="Закрыть" onPress={onClose} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" }}>
+        <Pressable
+          onPress={() => undefined}
+          style={{ backgroundColor: p.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 10, paddingBottom: Math.max(insets.bottom, 14) }}
+        >
+          {options.map((option) => (
+            <Pressable
+              key={option.source}
+              accessibilityRole="button"
+              accessibilityHint={option.hint}
+              onPress={() => onPick(option.source)}
+              style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, minHeight: 64, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+            >
+              <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: p.accentSoft, alignItems: "center", justifyContent: "center" }}>
+                <Icon name={option.icon} size={22} color={p.accentText} strokeWidth={2} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <AppText variant="bodyStrong">{option.label}</AppText>
+                <AppText variant="caption" muted>
+                  {option.hint}
+                </AppText>
+              </View>
             </Pressable>
           ))}
         </Pressable>
