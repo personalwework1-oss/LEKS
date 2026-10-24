@@ -22,6 +22,9 @@ services:
     environment:
       DATABASE_URL: postgres://leks:${POSTGRES_PASSWORD}@db:5432/leks
       LOG_LEVEL: info
+      BLOB_DIR: /data/blobs
+    volumes:
+      - blobs:/data/blobs
     depends_on:
       db:
         condition: service_healthy
@@ -44,5 +47,6 @@ services:
 
 volumes:
   db:
+  blobs:
   caddy_data:
   caddy_config:

@@ -22,6 +22,8 @@ COPY --from=build /repo/apps/server/package.json apps/server/package.json
 COPY --from=build /repo/apps/server/dist apps/server/dist
 COPY --from=build /repo/apps/server/migrations apps/server/migrations
 COPY --from=build /repo/apps/server/node_modules apps/server/node_modules
+RUN mkdir -p /data/blobs && chown node:node /data/blobs
+ENV BLOB_DIR=/data/blobs
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD node -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

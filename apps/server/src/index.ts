@@ -6,7 +6,7 @@ const config = loadConfig();
 const pool = createPool(config.DATABASE_URL);
 await migrate(pool);
 
-const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL } });
+const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL }, blobDir: config.BLOB_DIR });
 await app.listen({ host: config.HOST, port: config.PORT });
 
 let stopping = false;

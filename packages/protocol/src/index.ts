@@ -31,6 +31,15 @@ export const MAX_KEY_PACKAGES = 100;
 /** Undelivered messages are deleted after this many days. */
 export const MESSAGE_RETENTION_DAYS = 30;
 
+/** Largest encrypted photo or file, in bytes (the encrypted file is a bit larger than the original). */
+export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
+
+/** Encrypted files are deleted from the server after this many days; phones keep their own copy. */
+export const BLOB_RETENTION_DAYS = 30;
+
+/** How much one device may upload per day, in bytes. */
+export const DAILY_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+
 /**
  * A device signs `AUTH_CONTEXT` (UTF-8) followed by the raw challenge bytes
  * with its Ed25519 device key. The prefix keeps the signature from being
@@ -154,6 +163,8 @@ export const HttpErrorCode = z.enum([
   "login_locked",
   "recovery_failed",
   "recovery_locked",
+  "upload_failed",
+  "not_found",
   "rate_limited",
   "internal",
 ]);
@@ -204,6 +215,11 @@ export const ClientFrame = z.discriminatedUnion("type", [
     currentPassword: z.string().min(1).max(128),
     newPassword: Password,
   }),
+  /**
+   * Asks for a place to upload one encrypted file of exactly `size` bytes.
+   * The answer carries a one-time token for `PUT /v1/blobs/:blobId`.
+   */
+  z.object({ type: z.literal("request_upload"), requestId: RequestId, size: z.number().int().positive().max(MAX_BLOB_BYTES) }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -223,6 +239,7 @@ export const ErrorCode = z.enum([
   "wrong_password",
   "weak_password",
   "login_locked",
+  "upload_quota_exceeded",
   "rate_limited",
   "internal",
 ]);
@@ -273,6 +290,13 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("recovery_code"), requestId: RequestId, recoveryCode: z.string() }),
   z.object({ type: z.literal("recovery_code_deleted"), requestId: RequestId }),
   z.object({ type: z.literal("password_changed"), requestId: RequestId }),
+  z.object({
+    type: z.literal("upload_ready"),
+    requestId: RequestId,
+    blobId: Id,
+    /** Send as `Authorization: Bearer <token>`; valid once, for one hour. */
+    token: z.string(),
+  }),
   z.object({ type: z.literal("error"), code: ErrorCode, requestId: z.string().optional() }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;

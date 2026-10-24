@@ -9,6 +9,14 @@ export class ConflictError extends Error {
 
 export class LimitError extends Error {}
 
+export interface BlobRecord {
+  id: string;
+  size: number;
+  tokenHash: Buffer | null;
+  tokenExpiresAt: Date | null;
+  uploadedAt: Date | null;
+}
+
 export interface NewDeviceRecord {
   platform: "ios" | "android";
   authPublicKey: Buffer;
@@ -342,6 +350,61 @@ export class Store {
       [retentionDays],
     );
     return rowCount ?? 0;
+  }
+
+  // ---- encrypted files -----------------------------------------------------
+
+  /** Reserves an upload; throws LimitError if the device's daily allowance would be exceeded. */
+  async createBlob(input: { id: string; deviceId: string; size: number; tokenHash: Buffer; dailyLimit: number }): Promise<void> {
+    await this.transaction(async (client) => {
+      // One reservation at a time per device keeps the allowance check honest.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.deviceId]);
+      const { rows } = await client.query<{ total: string }>(
+        "SELECT COALESCE(SUM(size), 0) AS total FROM blobs WHERE uploader_device_id = $1 AND created_at > now() - interval '1 day'",
+        [input.deviceId],
+      );
+      if (Number(rows[0]!.total) + input.size > input.dailyLimit) throw new LimitError("daily upload allowance");
+      await client.query(
+        `INSERT INTO blobs (id, uploader_device_id, size, token_hash, token_expires_at)
+         VALUES ($1, $2, $3, $4, now() + interval '1 hour')`,
+        [input.id, input.deviceId, input.size, input.tokenHash],
+      );
+    });
+  }
+
+  async blob(id: string): Promise<BlobRecord | null> {
+    const { rows } = await this.pool.query<{
+      id: string;
+      size: string;
+      token_hash: Buffer | null;
+      token_expires_at: Date | null;
+      uploaded_at: Date | null;
+    }>("SELECT id, size, token_hash, token_expires_at, uploaded_at FROM blobs WHERE id = $1", [id]);
+    const row = rows[0];
+    return row
+      ? { id: row.id, size: Number(row.size), tokenHash: row.token_hash, tokenExpiresAt: row.token_expires_at, uploadedAt: row.uploaded_at }
+      : null;
+  }
+
+  /** Marks the upload done and burns the token; false if it was already used. */
+  async completeBlob(id: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      "UPDATE blobs SET uploaded_at = now(), token_hash = NULL, token_expires_at = NULL WHERE id = $1 AND uploaded_at IS NULL",
+      [id],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Forgets old files and unfinished uploads; returns their ids so the files can be removed. */
+  async purgeBlobs(retentionDays: number): Promise<string[]> {
+    const { rows } = await this.pool.query<{ id: string }>(
+      `DELETE FROM blobs
+       WHERE created_at < now() - make_interval(days => $1)
+          OR (uploaded_at IS NULL AND token_expires_at < now() - interval '1 hour')
+       RETURNING id`,
+      [retentionDays],
+    );
+    return rows.map((row) => row.id);
   }
 
   // ---- push --------------------------------------------------------------

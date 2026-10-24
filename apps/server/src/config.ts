@@ -4,6 +4,8 @@ const Env = z.object({
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  /** Where encrypted files are kept. */
+  BLOB_DIR: z.string().min(1).default("./data/blobs"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 

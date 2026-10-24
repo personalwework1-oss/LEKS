@@ -1,7 +1,9 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   authMessage,
   ClientFrame,
   CloseCode,
+  DAILY_UPLOAD_BYTES,
   type ErrorCode,
   passwordProblem,
   PROTOCOL_VERSION,
@@ -20,6 +22,7 @@ import {
 } from "../security.js";
 import { LOGIN_LOCK_MINUTES, LOGIN_MAX_FAILURES } from "./accounts.js";
 import { LimitError, type Store } from "../store.js";
+import { hashUploadToken } from "./blobs.js";
 
 /** Frames a connection may send: a burst of 100, refilled at 50 per second. */
 const RATE_BURST = 100;
@@ -210,6 +213,19 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub) {
         case "delete_recovery_code": {
           await store.setRecoveryHash(me.accountId, null);
           send({ type: "recovery_code_deleted", requestId: frame.requestId });
+          return;
+        }
+
+        case "request_upload": {
+          const token = randomBytes(32).toString("base64url");
+          const blobId = randomUUID();
+          try {
+            await store.createBlob({ id: blobId, deviceId: me.deviceId, size: frame.size, tokenHash: hashUploadToken(token), dailyLimit: DAILY_UPLOAD_BYTES });
+          } catch (err) {
+            if (err instanceof LimitError) return error("upload_quota_exceeded", frame.requestId);
+            throw err;
+          }
+          send({ type: "upload_ready", requestId: frame.requestId, blobId, token });
           return;
         }
 
