@@ -1,3 +1,4 @@
+import { formatDuration, toWaveform } from "../src/features/waveform";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -82,5 +83,22 @@ describe("avatars", () => {
     expect(initials("christian wolf")).toBe("CW");
     expect(initials("  ")).toBe("?");
     expect(avatarTint("abc", "light")).toEqual(avatarTint("abc", "light"));
+  });
+});
+
+describe("voice waveform", () => {
+  it("squeezes any number of samples into bars between 0 and 1", () => {
+    const bars = toWaveform(Array.from({ length: 500 }, (_, i) => -60 + (i % 60)), 48);
+    expect(bars).toHaveLength(48);
+    expect(Math.min(...bars)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...bars)).toBeLessThanOrEqual(1);
+    expect(toWaveform([])).toEqual([]);
+    expect(toWaveform([-160, 0], 4)).toEqual([0, 0, 1, 1]);
+  });
+
+  it("formats durations as m:ss", () => {
+    expect(formatDuration(0)).toBe("0:00");
+    expect(formatDuration(65_400)).toBe("1:05");
+    expect(formatDuration(15 * 60 * 1000)).toBe("15:00");
   });
 });

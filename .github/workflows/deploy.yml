@@ -75,8 +75,8 @@ jobs:
           TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           exec > >(tee -a /tmp/deploy.log) 2>&1
-          scp -q deploy/setup.sh deploy/docker-compose.yml deploy/Caddyfile "root@$SERVER_IP:/tmp/"
-          ssh "root@$SERVER_IP" "LEKS_HOST=$LEKS_HOST bash /tmp/setup.sh && mv /tmp/docker-compose.yml /tmp/Caddyfile /opt/leks/ && rm /tmp/setup.sh"
+          scp -q deploy/setup.sh deploy/docker-compose.yml deploy/Caddyfile deploy/livekit.yaml "root@$SERVER_IP:/tmp/"
+          ssh "root@$SERVER_IP" "LEKS_HOST=$LEKS_HOST SERVER_IP=$SERVER_IP bash /tmp/setup.sh && mv /tmp/docker-compose.yml /tmp/Caddyfile /tmp/livekit.yaml /opt/leks/ && rm /tmp/setup.sh"
           ssh "root@$SERVER_IP" bash -s <<SCRIPT
             set -euo pipefail
             cd /opt/leks
@@ -89,6 +89,7 @@ jobs:
             docker compose up -d --remove-orphans
             docker image prune -af --filter "until=168h" >/dev/null || true
             docker compose ps
+            curl -fsS --retry 15 --retry-delay 2 --retry-all-errors http://127.0.0.1:7880 >/dev/null && echo "calls server ok"
           SCRIPT
 
       - name: Check it answers over HTTPS

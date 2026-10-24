@@ -604,6 +604,17 @@ describe("photos and files", () => {
     expect((await b.messenger.message(sent.id))).toMatchObject({ deleted: true, attachment: null });
   });
 
+  it("sends a voice message that downloads by itself with its length and waveform", async () => {
+    const { a, b, chatId } = await chatting();
+    const voice: OutgoingFile = { ...picked(a, "voice.m4a", "audio", "file"), kind: "voice", mime: "audio/mp4", duration: 4200, waveform: [0, 0.5, 1.7, -1] };
+    await a.messenger.sendFile(chatId, voice);
+    await b.deliver();
+    await settle();
+    const [received] = await b.messenger.messages(chatId);
+    expect(received!.attachment).toMatchObject({ kind: "voice", state: "ready", duration: 4200, waveform: [0, 0.5, 1, 0] });
+    expect((await b.messenger.conversation(chatId))?.lastText).toBe("🎤 Голосовое сообщение");
+  });
+
   it("rejects files that are too big before doing any work", async () => {
     const { a, chatId } = await chatting();
     const file = { ...picked(a, "huge.bin", "x", "file"), size: 200 * 1024 * 1024 };

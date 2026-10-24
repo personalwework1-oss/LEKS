@@ -8,6 +8,7 @@ import { AttachmentView } from "@/components/AttachmentView";
 import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar, IconButton } from "@/components/ui";
 import { pickDocuments, pickFromGallery } from "@/features/attachments";
+import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { MessengerError, previewOf } from "@/messaging/messenger";
 import { useConversation, useMessages, useTyping } from "@/messaging/hooks";
@@ -31,6 +32,7 @@ export default function Chat() {
   const [mode, setMode] = useState<Mode>(null);
   const [menuFor, setMenuFor] = useState<Message | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
 
@@ -240,6 +242,19 @@ export default function Chat() {
           </AppText>
         ) : null}
         <View style={{ paddingTop: 8, paddingHorizontal: 10, paddingBottom: Math.max(insets.bottom, 10), flexDirection: "row", alignItems: "flex-end", gap: 6 }}>
+          {recording ? (
+            <VoiceRecorder
+              onCancel={() => setRecording(false)}
+              onError={(text) => setAttachError(text)}
+              onSend={(file) => {
+                setRecording(false);
+                const replyTo = mode?.kind === "reply" ? mode.message.id : null;
+                if (replyTo) setMode(null);
+                messenger?.sendFile(id, file, "", replyTo).catch(() => setAttachError("Не удалось отправить голосовое."));
+              }}
+            />
+          ) : (
+          <>
           {mode?.kind === "edit" ? null : <IconButton icon="paperclip" label="Прикрепить фото или файл" tone="plain" onPress={() => setAttachOpen(true)} />}
           <View style={{ flex: 1, minHeight: 44, borderRadius: 22, backgroundColor: p.surfaceMuted, justifyContent: "center", paddingHorizontal: 16 }}>
             <TextInput
@@ -254,9 +269,20 @@ export default function Chat() {
               style={{ fontFamily: fonts.regular, fontSize: 16, color: p.text, maxHeight: 120, paddingVertical: 10 }}
             />
           </View>
-          <View style={{ opacity: canSend ? 1 : 0.4 }}>
-            <IconButton icon={mode?.kind === "edit" ? "check" : "send"} label={mode?.kind === "edit" ? "Сохранить" : "Отправить"} tone="accent" onPress={() => void send()} />
-          </View>
+          {draft.trim().length === 0 && mode?.kind !== "edit" ? (
+            <MicButton
+              onPress={() => {
+                setAttachError(null);
+                setRecording(true);
+              }}
+            />
+          ) : (
+            <View style={{ opacity: canSend ? 1 : 0.4 }}>
+              <IconButton icon={mode?.kind === "edit" ? "check" : "send"} label={mode?.kind === "edit" ? "Сохранить" : "Отправить"} tone="accent" onPress={() => void send()} />
+            </View>
+          )}
+          </>
+          )}
         </View>
       </View>
       )}

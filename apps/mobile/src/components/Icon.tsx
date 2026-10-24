@@ -185,6 +185,12 @@ const icons = {
     </>
   ),
   play: <Path d="M8 5.5v13l10.5-6.5z" />,
+  pause: (
+    <>
+      <Rect x="6.5" y="5" width="3.5" height="14" rx="1" />
+      <Rect x="14" y="5" width="3.5" height="14" rx="1" />
+    </>
+  ),
   file: (
     <>
       <Path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />

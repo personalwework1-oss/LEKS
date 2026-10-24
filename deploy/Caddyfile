@@ -1,7 +1,14 @@
 # HTTPS certificates are obtained and renewed automatically (Let's Encrypt).
 {$LEKS_HOST} {
 	encode zstd gzip
-	reverse_proxy server:8080
+	# Call signalling goes to the media server (on the host network).
+	@livekit path /rtc /rtc/* /twirp/*
+	handle @livekit {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle {
+		reverse_proxy server:8080
+	}
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff

@@ -5,6 +5,7 @@ import { BLOB_RETENTION_DAYS, MAX_FRAME_BYTES, MESSAGE_RETENTION_DAYS, PROTOCOL_
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import type pg from "pg";
 import { BlobStorage } from "./blobs.js";
+import type { CallConfig } from "./calls.js";
 import { Hub, noPush, type PushNotifier } from "./hub.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { blobRoutes } from "./routes/blobs.js";
@@ -19,6 +20,8 @@ export interface AppOptions {
   purgeIntervalMs?: number;
   /** Folder for encrypted files. */
   blobDir?: string;
+  /** The media server for calls; calls are unavailable without it. */
+  calls?: CallConfig | null;
 }
 
 export interface App extends FastifyInstance {
@@ -40,6 +43,7 @@ export async function buildApp({
   push = noPush,
   purgeIntervalMs = 60 * 60 * 1000,
   blobDir = join(tmpdir(), "leks-blobs"),
+  calls = null,
 }: AppOptions): Promise<App> {
   const app = Fastify({
     logger:
@@ -75,7 +79,7 @@ export async function buildApp({
   });
 
   accountRoutes(app, store, hub);
-  realtimeRoutes(app, store, hub);
+  realtimeRoutes(app, store, hub, calls);
   blobRoutes(app, store, blobs);
 
   if (purgeIntervalMs > 0) {

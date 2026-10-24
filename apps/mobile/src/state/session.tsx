@@ -2,7 +2,7 @@ import * as Crypto from "expo-crypto";
 import * as LocalAuthentication from "expo-local-authentication";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
-import type { AccountSession } from "@leks/protocol";
+import { type AccountSession, toBase64url } from "@leks/protocol";
 import { HttpApi } from "../api/http";
 import { type ConnectionState, Realtime } from "../api/realtime";
 import { API_URL, APP_VERSION, WS_URL } from "../config";
@@ -10,6 +10,7 @@ import { LeksCrypto } from "../../modules/leks-crypto";
 import { DeviceKey } from "../crypto/deviceKey";
 import { NativeEngine } from "../crypto/engine";
 import { identityOf, Messenger } from "../messaging/messenger";
+import { CallManager } from "../calls/CallManager";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
@@ -39,6 +40,7 @@ interface SessionContext {
   realtime: Realtime | null;
   /** Chats on this phone; null until the encryption core has opened (or where it is not built in). */
   messenger: Messenger | null;
+  calls: CallManager | null;
   lock: LockSettings;
   biometricLabel: string | null;
   register(input: { username: string; displayName: string; password: string }): Promise<void>;
@@ -67,6 +69,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<ConnectionState>("offline");
   const [realtime, setRealtime] = useState<Realtime | null>(null);
   const [messenger, setMessenger] = useState<Messenger | null>(null);
+  const [calls, setCalls] = useState<CallManager | null>(null);
   const [biometricLabel, setBiometricLabel] = useState<string | null>(null);
   const lockRef = useRef(lock);
   useEffect(() => {
@@ -88,11 +91,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         onMessages: (messages) => void created.onMessages(messages),
         onAuthenticated: (available) => void created.onAuthenticated(available).catch((e) => console.warn("key packages", e)),
       });
+      const callManager = new CallManager({
+        myAccountId: session.accountId,
+        send: (conversationId, payload) => created.sendCallSignal(conversationId, payload),
+        token: async (room) => {
+          const pass = await realtime.request({ type: "call_token", room }, "call_token");
+          return { url: pass.url, token: pass.token };
+        },
+        uuid: () => Crypto.randomUUID(),
+        newKey: () => toBase64url(Crypto.getRandomBytes(32)),
+        now: Date.now,
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+      });
+      created.onCall((signal) => callManager.receive(signal));
       setMessenger(created);
+      setCalls(callManager);
     })().catch((error) => console.warn("encryption core failed to open", error));
     return () => {
       cancelled = true;
       setMessenger(null);
+      setCalls(null);
     };
   }, [session, realtime]);
 
@@ -199,6 +218,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       connection,
       realtime,
       messenger,
+      calls,
       lock,
       biometricLabel,
       async register(input) {
@@ -249,7 +269,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       signOut: signOutLocal,
     }),
-    [status, onboarding, session, connection, realtime, messenger, lock, biometricLabel, adopt],
+    [status, onboarding, session, connection, realtime, messenger, calls, lock, biometricLabel, adopt],
   );
 
   return <Context.Provider value={value}>{children}</Context.Provider>;

@@ -32,6 +32,13 @@
         { "faceIDPermission": "Face ID защищает вход в LEKS." }
       ],
       [
+        "expo-audio",
+        {
+          "microphonePermission": "LEKS записывает звук, только когда вы записываете голосовое сообщение.",
+          "enableBackgroundRecording": false
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "LEKS открывает фото и видео, только когда вы сами выбираете их для отправки.",

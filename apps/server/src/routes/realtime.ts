@@ -23,6 +23,7 @@ import {
 import { LOGIN_LOCK_MINUTES, LOGIN_MAX_FAILURES } from "./accounts.js";
 import { LimitError, type Store } from "../store.js";
 import { hashUploadToken } from "./blobs.js";
+import { type CallConfig, callToken } from "../calls.js";
 
 /** Frames a connection may send: a burst of 100, refilled at 50 per second. */
 const RATE_BURST = 100;
@@ -33,7 +34,7 @@ type State =
   | { phase: "greeted"; challenge: Buffer }
   | { phase: "authenticated"; connection: DeviceConnection };
 
-export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub) {
+export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, calls: CallConfig | null = null) {
   app.get("/v1/ws", { websocket: true }, (socket: WebSocket) => {
     let state: State = { phase: "new" };
     let tokens = RATE_BURST;
@@ -226,6 +227,12 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub) {
             throw err;
           }
           send({ type: "upload_ready", requestId: frame.requestId, blobId, token });
+          return;
+        }
+
+        case "call_token": {
+          if (!calls) return error("calls_unavailable", frame.requestId);
+          send({ type: "call_token", requestId: frame.requestId, url: calls.url, token: callToken(calls, frame.room, me.deviceId) });
           return;
         }
 

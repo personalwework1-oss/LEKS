@@ -6,6 +6,7 @@ import { formatBytes } from "@/format";
 import type { Attachment } from "@/messaging/types";
 import { usePalette } from "@/theme";
 import { Icon } from "./Icon";
+import { VoicePlayer } from "./VoicePlayer";
 import { AppText, IconButton } from "./ui";
 
 const MAX_WIDTH = 240;
@@ -54,6 +55,8 @@ export function AttachmentView({
     if (a.kind === "image") setViewing(true);
     else void open(a);
   }
+
+  if (a.kind === "voice") return <VoicePlayer attachment={a} outgoing={outgoing} onDownload={onDownload} onRetry={onRetry} />;
 
   if (a.kind === "image") {
     const size = photoSize(a);

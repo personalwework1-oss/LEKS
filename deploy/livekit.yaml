@@ -1,0 +1,20 @@
+# Media server for calls. Audio and video are end-to-end encrypted by the
+# apps (the key is shared inside the encrypted chat), so this server only
+# forwards ciphertext. API keys come from LIVEKIT_KEYS in the environment.
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50200
+  use_external_ip: false
+turn:
+  enabled: true
+  udp_port: 3478
+room:
+  empty_timeout: 60
+  departure_timeout: 20
+  max_participants: 50
+logging:
+  level: warn

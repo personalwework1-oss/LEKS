@@ -59,7 +59,7 @@ export interface Message {
   attachment: Attachment | null;
 }
 
-export type AttachmentKind = "image" | "video" | "file";
+export type AttachmentKind = "image" | "video" | "file" | "voice";
 
 /**
  * Where an attachment is:
@@ -77,6 +77,9 @@ export interface Attachment {
   height: number | null;
   /** A tiny JPEG preview (base64) shown until the real image is here. */
   thumb: string | null;
+  /** Voice messages: length in milliseconds and loudness bars (0–1). */
+  duration?: number | null;
+  waveform?: number[] | null;
   /** Where the encrypted copy is on the server, and its key (base64url); null until uploaded. */
   blobId: string | null;
   key: string | null;
@@ -142,6 +145,8 @@ export type Payload =
       width?: number;
       height?: number;
       thumb?: string;
+      duration?: number;
+      waveform?: number[];
     }
   | { v: 1; type: "receipt"; state: "delivered" | "read"; ids: string[] }
   | { v: 1; type: "edit"; id: string; text: string; editedAt: number }
@@ -152,5 +157,8 @@ export type Payload =
   | { v: 1; type: "group_info"; title: string; members: GroupMember[]; version: number }
   /** I am leaving the group; an admin's phone then removes my devices. */
   | { v: 1; type: "leave" }
+  /** Calls: the room id and the media key travel only inside this encryption. */
+  | { v: 1; type: "call_invite"; callId: string; video: boolean; key: string; sentAt: number }
+  | { v: 1; type: "call_accept" | "call_decline" | "call_end"; callId: string }
   /** Not stored or retried: only shows "typing…" for a few seconds. */
   | { v: 1; type: "typing" };

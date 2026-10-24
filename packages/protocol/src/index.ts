@@ -220,6 +220,12 @@ export const ClientFrame = z.discriminatedUnion("type", [
    * The answer carries a one-time token for `PUT /v1/blobs/:blobId`.
    */
   z.object({ type: z.literal("request_upload"), requestId: RequestId, size: z.number().int().positive().max(MAX_BLOB_BYTES) }),
+  /**
+   * Asks for a pass to a call room. The room is a random id the caller made
+   * up and shared inside the encrypted chat; audio and video are end-to-end
+   * encrypted with a key the server never sees.
+   */
+  z.object({ type: z.literal("call_token"), requestId: RequestId, room: Id }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -240,6 +246,7 @@ export const ErrorCode = z.enum([
   "weak_password",
   "login_locked",
   "upload_quota_exceeded",
+  "calls_unavailable",
   "rate_limited",
   "internal",
 ]);
@@ -290,6 +297,13 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("recovery_code"), requestId: RequestId, recoveryCode: z.string() }),
   z.object({ type: z.literal("recovery_code_deleted"), requestId: RequestId }),
   z.object({ type: z.literal("password_changed"), requestId: RequestId }),
+  z.object({
+    type: z.literal("call_token"),
+    requestId: RequestId,
+    /** The media server (wss://…) and a short-lived pass for this room only. */
+    url: z.string(),
+    token: z.string(),
+  }),
   z.object({
     type: z.literal("upload_ready"),
     requestId: RequestId,

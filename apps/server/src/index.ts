@@ -6,7 +6,11 @@ const config = loadConfig();
 const pool = createPool(config.DATABASE_URL);
 await migrate(pool);
 
-const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL }, blobDir: config.BLOB_DIR });
+const calls =
+  config.LIVEKIT_URL && config.LIVEKIT_API_KEY && config.LIVEKIT_API_SECRET
+    ? { url: config.LIVEKIT_URL, apiKey: config.LIVEKIT_API_KEY, apiSecret: config.LIVEKIT_API_SECRET }
+    : null;
+const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL }, blobDir: config.BLOB_DIR, calls });
 await app.listen({ host: config.HOST, port: config.PORT });
 
 let stopping = false;

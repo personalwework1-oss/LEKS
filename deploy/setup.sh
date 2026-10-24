@@ -3,6 +3,7 @@
 #   LEKS_HOST=example.org bash setup.sh
 set -euo pipefail
 : "${LEKS_HOST:?LEKS_HOST is required}"
+: "${SERVER_IP:?SERVER_IP is required}"
 export DEBIAN_FRONTEND=noninteractive
 
 if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
@@ -17,6 +18,10 @@ ufw default allow outgoing >/dev/null
 ufw allow 22/tcp >/dev/null
 ufw allow 80/tcp >/dev/null
 ufw allow 443 >/dev/null
+# Calls: media over TCP 7881 and UDP 50000-50200, TURN on UDP 3478.
+ufw allow 7881/tcp >/dev/null
+ufw allow 50000:50200/udp >/dev/null
+ufw allow 3478/udp >/dev/null
 ufw --force enable >/dev/null
 
 # Keys only, no passwords.
@@ -27,12 +32,16 @@ fi
 
 mkdir -p /opt/leks
 cd /opt/leks
+random() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c "$1"; }
 if [ ! -f .env ]; then
   umask 077
-  echo "POSTGRES_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)" > .env
+  echo "POSTGRES_PASSWORD=$(random 40)" > .env
 fi
+grep -q '^LIVEKIT_API_KEY=' .env || echo "LIVEKIT_API_KEY=API$(random 12)" >> .env
+grep -q '^LIVEKIT_API_SECRET=' .env || echo "LIVEKIT_API_SECRET=$(random 48)" >> .env
 # The host may change (for example when a domain is connected); keep the rest.
-grep -v '^LEKS_HOST=' .env > .env.new || true
+grep -v -e '^LEKS_HOST=' -e '^SERVER_IP=' .env > .env.new || true
 echo "LEKS_HOST=$LEKS_HOST" >> .env.new
+echo "SERVER_IP=$SERVER_IP" >> .env.new
 mv .env.new .env
 chmod 600 .env

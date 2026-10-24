@@ -43,7 +43,13 @@ const MAX_TEXT = 4000;
 /** Photos up to this size download by themselves; bigger ones and other files on a tap. */
 const AUTO_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_THUMB = 12_000;
-const KINDS: AttachmentKind[] = ["image", "video", "file"];
+const KINDS: AttachmentKind[] = ["image", "video", "file", "voice"];
+const MAX_WAVEFORM = 64;
+
+/** A call signal from someone in a chat, handed to the call screen. */
+export type CallSignal =
+  | { type: "invite"; conversationId: string; from: string; callId: string; video: boolean; key: string; sentAt: number }
+  | { type: "accept" | "decline" | "end"; conversationId: string; from: string; callId: string };
 
 /** A file picked to send (already resized if it is a photo). */
 export interface OutgoingFile {
@@ -55,6 +61,8 @@ export interface OutgoingFile {
   width: number | null;
   height: number | null;
   thumb: string | null;
+  duration?: number | null;
+  waveform?: number[] | null;
 }
 
 export const identityOf = (me: { accountId: string; deviceId: string }) => `${me.accountId}:${me.deviceId}`;
@@ -99,7 +107,10 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         (value.replyTo === undefined || isString(value.replyTo)) &&
         (value.width === undefined || typeof value.width === "number") &&
         (value.height === undefined || typeof value.height === "number") &&
-        (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB))
+        (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB)) &&
+        (value.duration === undefined || typeof value.duration === "number") &&
+        (value.waveform === undefined ||
+          (Array.isArray(value.waveform) && value.waveform.length <= MAX_WAVEFORM && value.waveform.every((n: unknown) => typeof n === "number")))
         ? (value as Payload)
         : null;
     case "edit":
@@ -121,6 +132,12 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         )
         ? (value as Payload)
         : null;
+    case "call_invite":
+      return isString(value.callId) && typeof value.video === "boolean" && isString(value.key) && typeof value.sentAt === "number" ? (value as Payload) : null;
+    case "call_accept":
+    case "call_decline":
+    case "call_end":
+      return isString(value.callId) ? (value as Payload) : null;
     case "leave":
     case "typing":
       return value as Payload;
@@ -155,7 +172,8 @@ export function previewOf(m: Message | null): string | null {
   if (!m) return null;
   if (m.deleted) return "Сообщение удалено";
   if (m.attachment && !m.text) {
-    return m.attachment.kind === "image" ? "📷 Фото" : m.attachment.kind === "video" ? "🎬 Видео" : `📎 ${m.attachment.name}`;
+    const kind = m.attachment.kind;
+    return kind === "image" ? "📷 Фото" : kind === "video" ? "🎬 Видео" : kind === "voice" ? "🎤 Голосовое сообщение" : `📎 ${m.attachment.name}`;
   }
   return m.text;
 }
@@ -188,6 +206,19 @@ export class Messenger {
 
   /** Attachments being uploaded or downloaded right now (message ids). */
   private readonly transfers = new Set<string>();
+  private callListener: ((signal: CallSignal) => void) | null = null;
+
+  /** The call screen listens here for invites, answers and hang-ups. */
+  onCall(listener: ((signal: CallSignal) => void) | null): void {
+    this.callListener = listener;
+  }
+
+  /** Sends a call signal into the chat (through the outbox, so it keeps its place in line). */
+  async sendCallSignal(conversationId: string, payload: Extract<Payload, { type: `call_${string}` }>): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat || chat.left) throw new MessengerError("not_allowed");
+    await this.sendPayload(conversationId, payload, null);
+  }
 
   get identity(): string {
     return identityOf(this.me);
@@ -394,6 +425,8 @@ export class Messenger {
             width: payload.width ?? null,
             height: payload.height ?? null,
             thumb: payload.thumb ?? null,
+            duration: payload.duration ?? null,
+            waveform: payload.waveform?.map((n) => Math.min(1, Math.max(0, n))) ?? null,
             blobId: payload.blobId,
             key: payload.key,
             localUri: null,
@@ -408,7 +441,7 @@ export class Messenger {
           lastAt: Math.max(conversation.lastAt, payload.sentAt),
           unread: conversation.unread + (mine ? 0 : 1),
         });
-        if (payload.kind === "image" && payload.size <= AUTO_DOWNLOAD_BYTES) void this.download(message.id);
+        if ((payload.kind === "image" || payload.kind === "voice") && payload.size <= AUTO_DOWNLOAD_BYTES) void this.download(message.id);
         return mine ? null : { conversationId: conversation.id, id: payload.id };
       }
 
@@ -454,6 +487,28 @@ export class Messenger {
         await this.store.updateMessage({ ...target, reactions });
         return null;
       }
+
+      case "call_invite":
+        if (fromPeer) {
+          this.callListener?.({
+            type: "invite",
+            conversationId: conversation.id,
+            from: sender.accountId,
+            callId: payload.callId,
+            video: payload.video,
+            key: payload.key,
+            // The server's time, so a phone with a wrong clock still rings only for fresh calls.
+            sentAt: message.sentAt,
+          });
+        }
+        return null;
+
+      case "call_accept":
+      case "call_decline":
+      case "call_end":
+        // My own other phones answering also counts: they stop ringing here.
+        this.callListener?.({ type: payload.type.slice(5) as "accept" | "decline" | "end", conversationId: conversation.id, from: sender.accountId, callId: payload.callId });
+        return null;
 
       case "typing":
         if (fromPeer && Math.abs(this.now() - message.sentAt) < TYPING_STALE_MS) this.showTyping(conversation.id);
@@ -587,6 +642,8 @@ export class Messenger {
         width: file.width,
         height: file.height,
         thumb: file.thumb && file.thumb.length <= MAX_THUMB ? file.thumb : null,
+        duration: file.duration ?? null,
+        waveform: file.waveform?.slice(0, MAX_WAVEFORM) ?? null,
         blobId: null,
         key: null,
         localUri,
@@ -653,6 +710,8 @@ export class Messenger {
         ...(sent.width ? { width: sent.width } : {}),
         ...(sent.height ? { height: sent.height } : {}),
         ...(sent.thumb ? { thumb: sent.thumb } : {}),
+        ...(sent.duration ? { duration: sent.duration } : {}),
+        ...(sent.waveform ? { waveform: sent.waveform.map((n) => Math.round(n * 100) / 100) } : {}),
       };
       await this.sendPayload(latest.conversationId, payload, latest.id);
     } catch (error) {
