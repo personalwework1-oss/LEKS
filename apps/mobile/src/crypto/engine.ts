@@ -22,6 +22,12 @@ export interface Engine {
   encrypt(groupId: string, plaintext: Uint8Array): Promise<string>;
   receive(message: string): Promise<Received>;
   members(groupId: string): Promise<string[]>;
+  /** Removes devices ("accountId:deviceId") from the group; returns the commit for everyone who was in it. */
+  removeMembers(groupId: string, identities: string[]): Promise<string>;
+  /** Whether this device is still in the group, and who is. */
+  groupState(groupId: string): Promise<{ active: boolean; members: string[] }>;
+  /** Deletes the group's keys from this device. */
+  forgetGroup(groupId: string): Promise<void>;
   /** Encrypts a file with a new key (base64url); returns the key and the encrypted size. */
   encryptFile(inputUri: string, outputUri: string): Promise<{ key: string; size: number }>;
   decryptFile(inputUri: string, outputUri: string, key: string): Promise<void>;
@@ -77,6 +83,15 @@ export class NativeEngine implements Engine {
   }
   async members(groupId: string) {
     return (await this.run<{ members: string[] }>({ op: "members", groupId })).members;
+  }
+  async removeMembers(groupId: string, identities: string[]) {
+    return (await this.run<{ commit: string }>({ op: "remove_members", groupId, identities })).commit;
+  }
+  groupState(groupId: string) {
+    return this.run<{ active: boolean; members: string[] }>({ op: "group_state", groupId });
+  }
+  async forgetGroup(groupId: string) {
+    await this.run({ op: "forget_group", groupId });
   }
   encryptFile(inputUri: string, outputUri: string) {
     return this.run<{ key: string; size: number }>({ op: "encrypt_file", input: uriToPath(inputUri), output: uriToPath(outputUri) });

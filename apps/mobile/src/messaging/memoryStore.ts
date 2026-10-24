@@ -7,16 +7,17 @@ export class MemoryStore implements MessageStore {
   private readonly queue = new Map<string, OutboxItem>();
 
   async conversations() {
-    return [...this.chats.values()].sort((a, b) => b.lastAt - a.lastAt);
+    return [...this.chats.values()].sort((a, b) => b.lastAt - a.lastAt).map((c) => ({ ...c, members: c.members.map((m) => ({ ...m })) }));
   }
   async conversation(id: string) {
-    return this.chats.get(id) ?? null;
+    const chat = this.chats.get(id);
+    return chat ? { ...chat, members: chat.members.map((m) => ({ ...m })) } : null;
   }
   async conversationWith(peerAccountId: string) {
-    return [...this.chats.values()].find((c) => c.peerAccountId === peerAccountId) ?? null;
+    return [...this.chats.values()].find((c) => c.kind === "direct" && c.peerAccountId === peerAccountId) ?? null;
   }
   async saveConversation(conversation: Conversation) {
-    this.chats.set(conversation.id, { ...conversation });
+    this.chats.set(conversation.id, { ...conversation, members: conversation.members.map((m) => ({ ...m })) });
   }
   async messages(conversationId: string, limit = 200) {
     return [...this.msgs.values()]

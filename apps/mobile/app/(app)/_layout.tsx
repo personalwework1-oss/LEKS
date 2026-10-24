@@ -7,6 +7,8 @@ export default function AppLayout() {
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: p.ground } }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="chat/[id]" />
+      <Stack.Screen name="group/new" />
+      <Stack.Screen name="group/[id]" />
       <Stack.Screen name="settings/lock" />
       <Stack.Screen name="settings/password" />
       <Stack.Screen name="settings/backup-code" />

@@ -1,12 +1,31 @@
+export type GroupRole = "admin" | "member";
+
+export interface GroupMember {
+  accountId: string;
+  displayName: string;
+  username: string;
+  role: GroupRole;
+}
+
+/** Most people in one group for now. */
+export const MAX_GROUP_MEMBERS = 200;
+
 export interface Conversation {
   /** The MLS group id (base64url); one group per chat. */
   id: string;
+  kind: "direct" | "group";
+  /** Direct chats: the other person. Groups: who invited me (or me, if I created it). */
   peerAccountId: string;
   title: string;
   username: string | null;
   lastText: string | null;
   lastAt: number;
   unread: number;
+  /** Groups only: everyone in it (including me), and the version of that list. */
+  members: GroupMember[];
+  version: number;
+  /** I left the group or was removed; it stays readable but closed. */
+  left: boolean;
 }
 
 /**
@@ -129,5 +148,9 @@ export type Payload =
   | { v: 1; type: "delete"; id: string }
   /** An empty emoji removes the reaction. */
   | { v: 1; type: "reaction"; id: string; emoji: string }
+  /** The group's name and members, sent by an admin; a higher version replaces a lower one. */
+  | { v: 1; type: "group_info"; title: string; members: GroupMember[]; version: number }
+  /** I am leaving the group; an admin's phone then removes my devices. */
+  | { v: 1; type: "leave" }
   /** Not stored or retried: only shows "typing…" for a few seconds. */
   | { v: 1; type: "typing" };

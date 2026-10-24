@@ -22,7 +22,7 @@ type Mode = { kind: "reply"; message: Message } | { kind: "edit"; message: Messa
 export default function Chat() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, skipped } = useLocalSearchParams<{ id: string; skipped?: string }>();
   const { messenger, connection, session } = useSession();
   const { data: chat } = useConversation(id);
   const { data: messages } = useMessages(id);
@@ -113,7 +113,17 @@ export default function Chat() {
     setMode(null);
   }
 
-  const status = typing ? "печатает…" : connection !== "online" ? "ожидание сети…" : chat?.username ? `@${chat.username}` : "защищённый чат";
+  const isGroup = chat?.kind === "group";
+  const names = useMemo(() => new Map((chat?.members ?? []).map((m) => [m.accountId, m.displayName])), [chat?.members]);
+  const status = typing
+    ? "печатает…"
+    : connection !== "online"
+      ? "ожидание сети…"
+      : isGroup
+        ? `${chat.members.length} ${chat.members.length % 10 === 1 && chat.members.length % 100 !== 11 ? "участник" : [2, 3, 4].includes(chat.members.length % 10) && ![12, 13, 14].includes(chat.members.length % 100) ? "участника" : "участников"}`
+        : chat?.username
+          ? `@${chat.username}`
+          : "защищённый чат";
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: p.chatGround }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -131,7 +141,14 @@ export default function Chat() {
         }}
       >
         <IconButton icon="back" label="Назад к чатам" tone="plain" onPress={() => router.back()} />
-        <Avatar name={title} seed={chat?.peerAccountId ?? id} size={42} />
+        <Pressable
+          disabled={!isGroup}
+          onPress={() => router.push({ pathname: "/group/[id]", params: { id } })}
+          accessibilityRole={isGroup ? "button" : undefined}
+          accessibilityHint={isGroup ? "Открыть участников и настройки группы" : undefined}
+          style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
+        >
+        <Avatar name={title} seed={isGroup ? id : (chat?.peerAccountId ?? id)} size={42} />
         <View style={{ flex: 1 }}>
           <AppText variant="heading" numberOfLines={1}>
             {title}
@@ -143,6 +160,7 @@ export default function Chat() {
             </AppText>
           </View>
         </View>
+        </Pressable>
       </View>
 
       <FlatList
@@ -163,7 +181,8 @@ export default function Chat() {
               message={item.message}
               quoted={item.message.replyTo ? (byId.get(item.message.replyTo) ?? "missing") : null}
               myAccountId={session?.accountId ?? ""}
-              peerName={title}
+              peerName={isGroup ? (names.get(item.message.senderAccountId) ?? "Участник") : title}
+              showSender={isGroup && !item.message.outgoing}
               onLongPress={() => {
                 void Haptics.selectionAsync();
                 setMenuFor(item.message);
@@ -178,19 +197,35 @@ export default function Chat() {
           <View style={{ alignSelf: "center", maxWidth: 300, padding: 14, marginBottom: 8, borderRadius: 14, backgroundColor: p.surface, flexDirection: "row", gap: 10 }}>
             <Icon name="lock" size={16} color={p.accentText} strokeWidth={2.2} />
             <AppText variant="caption" muted style={{ flex: 1 }}>
-              Сообщения защищены сквозным шифрованием. Прочитать их можете только вы и {title}.
+              {isGroup
+                ? "Сообщения, название и участники группы защищены сквозным шифрованием. Прочитать их могут только участники."
+                : `Сообщения защищены сквозным шифрованием. Прочитать их можете только вы и ${title}.`}
             </AppText>
           </View>
         }
       />
 
+      {skipped ? (
+        <View style={{ backgroundColor: p.surface, paddingHorizontal: 16, paddingVertical: 8, borderTopWidth: 1, borderTopColor: p.separator }}>
+          <AppText variant="caption" muted>
+            Не добавлены — ещё не подключили телефон: {skipped}. Добавьте их позже в настройках группы.
+          </AppText>
+        </View>
+      ) : null}
+      {chat?.left ? (
+        <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
+          <AppText muted style={{ textAlign: "center" }}>
+            Вы больше не участник этой группы.
+          </AppText>
+        </View>
+      ) : (
       <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator }}>
         {mode ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 16, paddingRight: 6, paddingTop: 8 }}>
             <Icon name={mode.kind === "edit" ? "edit" : "reply"} size={20} color={p.accentText} strokeWidth={2} />
             <View style={{ flex: 1, borderLeftWidth: 2, borderLeftColor: p.accent, paddingLeft: 8 }}>
               <AppText variant="caption" color={p.accentText} style={{ fontFamily: fonts.semibold }}>
-                {mode.kind === "edit" ? "Редактирование" : mode.message.outgoing ? "Ответ себе" : `Ответ ${title}`}
+                {mode.kind === "edit" ? "Редактирование" : mode.message.outgoing ? "Ответ себе" : `Ответ ${isGroup ? (names.get(mode.message.senderAccountId) ?? "участнику") : title}`}
               </AppText>
               <AppText variant="caption" muted numberOfLines={1}>
                 {previewOf(mode.message)}
@@ -224,6 +259,7 @@ export default function Chat() {
           </View>
         </View>
       </View>
+      )}
 
       <AttachMenu visible={attachOpen} onClose={() => setAttachOpen(false)} onPick={(source) => void attach(source)} />
 
@@ -274,8 +310,10 @@ function Bubble({
   onReact,
   onDownload,
   onRetry,
+  showSender,
 }: {
   message: Message;
+  showSender: boolean;
   /** The message this one answers; "missing" if it is not on this phone. */
   quoted: Message | "missing" | null;
   myAccountId: string;
@@ -323,6 +361,11 @@ function Bubble({
           opacity: message.deleted ? 0.75 : 1,
         }}
       >
+        {showSender ? (
+          <AppText variant="caption" color={p.accentText} style={{ fontFamily: fonts.semibold, marginBottom: 2 }} numberOfLines={1}>
+            {peerName}
+          </AppText>
+        ) : null}
         {quoted && !message.deleted ? (
           <View
             style={{

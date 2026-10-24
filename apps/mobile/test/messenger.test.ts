@@ -74,6 +74,18 @@ class FakeEngine implements Engine {
   async members(groupId: string) {
     return this.groups.get(groupId) ?? [];
   }
+  async removeMembers(groupId: string, identities: string[]) {
+    const members = (this.groups.get(groupId) ?? []).filter((m) => !identities.includes(m));
+    this.groups.set(groupId, members);
+    return this.enc({ commit: groupId, members });
+  }
+  async groupState(groupId: string) {
+    const members = this.groups.get(groupId) ?? [];
+    return { active: members.includes(this.identity), members };
+  }
+  async forgetGroup(groupId: string) {
+    this.groups.delete(groupId);
+  }
   private fileCounter = 0;
   /** Not real encryption: scrambles the bytes and prefixes the key, enough to test the flow. */
   async encryptFile(input: string, output: string) {
@@ -596,6 +608,152 @@ describe("photos and files", () => {
     const { a, chatId } = await chatting();
     const file = { ...picked(a, "huge.bin", "x", "file"), size: 200 * 1024 * 1024 };
     await expect(a.messenger.sendFile(chatId, file)).rejects.toEqual(new MessengerError("too_large"));
+  });
+});
+
+describe("groups", () => {
+  const carolMe: Me = { accountId: "acc-carol", deviceId: "dev-carol", displayName: "Кэрол", username: "carol" };
+
+  async function threePhones() {
+    const server = new FakeServer();
+    const a = new Phone(server, alice);
+    const b = new Phone(server, bob);
+    const c = new Phone(server, carolMe);
+    for (const p of [a, b, c]) await p.messenger.onAuthenticated(0);
+    const deliverAll = async () => {
+      for (let i = 0; i < 3; i++) for (const p of [a, b, c]) await p.deliver();
+    };
+    return { server, a, b, c, deliverAll };
+  }
+
+  it("creates a group everyone sees with the same name and members", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id, skipped } = await a.messenger.createGroup("Команда 🚀", [asUser(bob), asUser(carolMe), asUser(bob)]);
+    expect(skipped).toEqual([]);
+    await deliverAll();
+
+    for (const phone of [a, b, c]) {
+      const chat = await phone.messenger.conversation(id);
+      expect(chat).toMatchObject({ kind: "group", title: "Команда 🚀", version: 1, left: false });
+      expect(chat!.members.map((m) => [m.username, m.role])).toEqual([
+        ["alice", "admin"],
+        ["bob", "member"],
+        ["carol", "member"],
+      ]);
+    }
+
+    await b.messenger.send(id, "Всем привет");
+    await deliverAll();
+    for (const phone of [a, c]) expect((await phone.messenger.messages(id)).map((m) => m.text)).toEqual(["Всем привет"]);
+    // Opening a direct chat with Bob is a separate conversation, not the group.
+    expect(await a.messenger.startChat(asUser(bob))).not.toBe(id);
+  });
+
+  it("only admins change the group, and their changes reach everyone", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Проект", [asUser(bob), asUser(carolMe)]);
+    await deliverAll();
+
+    await expect(b.messenger.renameGroup(id, "Мой проект")).rejects.toEqual(new MessengerError("not_allowed"));
+    await expect(b.messenger.removeMember(id, "acc-carol")).rejects.toEqual(new MessengerError("not_allowed"));
+
+    await a.messenger.renameGroup(id, "Проект Х");
+    await a.messenger.setRole(id, "acc-bob", "admin");
+    await deliverAll();
+    expect(await c.messenger.conversation(id)).toMatchObject({ title: "Проект Х", version: 3 });
+
+    // Bob is an admin now.
+    await b.messenger.renameGroup(id, "Проект Y");
+    await deliverAll();
+    expect((await a.messenger.conversation(id))?.title).toBe("Проект Y");
+
+    // The last admin cannot be demoted.
+    await a.messenger.setRole(id, "acc-bob", "member");
+    await deliverAll();
+    await expect(a.messenger.setRole(id, "acc-alice", "member")).rejects.toEqual(new MessengerError("not_allowed"));
+  });
+
+  it("a removed member is told and cannot read what follows", async () => {
+    const { a, b, c, server, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Тайна", [asUser(bob), asUser(carolMe)]);
+    await deliverAll();
+
+    await a.messenger.removeMember(id, "acc-carol");
+    await deliverAll();
+    expect(await c.messenger.conversation(id)).toMatchObject({ left: true });
+    expect((await b.messenger.conversation(id))!.members.map((m) => m.username)).toEqual(["alice", "bob"]);
+
+    const sendsBefore = server.sends.length;
+    await a.messenger.send(id, "без Кэрол");
+    await deliverAll();
+    expect(server.sends.length).toBeGreaterThan(sendsBefore);
+    expect((await b.messenger.messages(id)).map((m) => m.text)).toEqual(["без Кэрол"]);
+    expect(await c.messenger.messages(id)).toEqual([]);
+    await expect(c.messenger.send(id, "я тут?")).rejects.toEqual(new MessengerError("not_allowed"));
+  });
+
+  it("someone who leaves is removed by an admin's phone", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Чат", [asUser(bob), asUser(carolMe)]);
+    await deliverAll();
+
+    await c.messenger.leaveGroup(id);
+    await deliverAll();
+    expect(await c.messenger.conversation(id)).toMatchObject({ left: true });
+    for (const phone of [a, b]) expect((await phone.messenger.conversation(id))!.members.map((m) => m.username)).toEqual(["alice", "bob"]);
+    expect(a.engine.groups.get(id)).not.toContain(identityOf(carolMe));
+  });
+
+  it("the only admin leaving hands the group to someone else", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Чат", [asUser(bob), asUser(carolMe)]);
+    await deliverAll();
+    await a.messenger.leaveGroup(id);
+    await deliverAll();
+    const chat = await c.messenger.conversation(id);
+    expect(chat!.members.filter((m) => m.role === "admin").map((m) => m.username)).toHaveLength(1);
+    expect(chat!.members.map((m) => m.username)).not.toContain("alice");
+  });
+
+  it("adds people later; they see the group but not older messages", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Двое", [asUser(bob)]);
+    await a.messenger.send(id, "до Кэрол");
+    await deliverAll();
+
+    await a.messenger.addMembers(id, [asUser(carolMe)]);
+    await a.messenger.send(id, "привет, Кэрол");
+    await deliverAll();
+    expect(await c.messenger.conversation(id)).toMatchObject({ kind: "group", title: "Двое" });
+    expect((await c.messenger.messages(id)).map((m) => m.text)).toEqual(["привет, Кэрол"]);
+    expect((await b.messenger.conversation(id))!.members).toHaveLength(3);
+  });
+
+  it("ignores group changes from someone who is not an admin, and strangers' messages", async () => {
+    const { a, b, c, deliverAll } = await threePhones();
+    const { id } = await a.messenger.createGroup("Чат", [asUser(bob), asUser(carolMe)]);
+    await deliverAll();
+    // Bob's phone is tampered with and sends a group update anyway.
+    const forged = { v: 1, type: "group_info", title: "Взломано", version: 99, members: [{ accountId: "acc-bob", displayName: "Боб", username: "bob", role: "admin" }] };
+    c.inbox.push({
+      id: c.server.nextId++,
+      from: { accountId: "acc-bob", deviceId: "dev-bob" },
+      kind: "message",
+      payload: await b.engine.encrypt(id, utf8Encode(JSON.stringify(forged))),
+      sentAt: 1,
+    });
+    await c.deliver();
+    expect(await c.messenger.conversation(id)).toMatchObject({ title: "Чат", version: 1 });
+  });
+
+  it("people without a connected phone are skipped, not silently added", async () => {
+    const server = new FakeServer();
+    const a = new Phone(server, alice);
+    const b = new Phone(server, bob);
+    await b.messenger.onAuthenticated(0);
+    const { id, skipped } = await a.messenger.createGroup("Чат", [asUser(bob), asUser(carolMe)]);
+    expect(skipped.map((p) => p.username)).toEqual(["carol"]);
+    expect((await a.messenger.conversation(id))!.members.map((m) => m.username)).toEqual(["alice", "bob"]);
   });
 });
 

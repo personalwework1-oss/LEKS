@@ -190,6 +190,56 @@ impl Client {
         })
     }
 
+    /// Removes members (by identity) and returns the commit, to be sent to
+    /// everyone who was in the group, including the removed members.
+    pub fn remove_members(
+        &mut self,
+        group_id: &[u8],
+        identities: &[Vec<u8>],
+    ) -> CryptoResult<Vec<u8>> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or(CryptoError::UnknownGroup)?;
+        let own = group.own_leaf_index();
+        let indices: Vec<LeafNodeIndex> = group
+            .members()
+            .filter(|member| {
+                identities
+                    .iter()
+                    .any(|identity| identity.as_slice() == member.credential.serialized_content())
+            })
+            .map(|member| member.index)
+            .collect();
+        if indices.is_empty() {
+            return Err(CryptoError::InvalidInput("no such member".into()));
+        }
+        if indices.contains(&own) {
+            return Err(CryptoError::InvalidInput("cannot remove yourself".into()));
+        }
+        let (commit, _welcome, _group_info) = group
+            .remove_members(&self.provider, &self.signer, &indices)
+            .map_err(mls)?;
+        group.merge_pending_commit(&self.provider).map_err(mls)?;
+        commit.to_bytes().map_err(mls)
+    }
+
+    /// False once this client has been removed from the group.
+    pub fn is_active(&self, group_id: &[u8]) -> CryptoResult<bool> {
+        self.groups
+            .get(group_id)
+            .map(|group| group.is_active())
+            .ok_or(CryptoError::UnknownGroup)
+    }
+
+    /// Deletes a group's keys from this device (after leaving or being removed).
+    pub fn forget_group(&mut self, group_id: &[u8]) -> CryptoResult<()> {
+        if let Some(mut group) = self.groups.remove(group_id) {
+            group.delete(self.provider.storage()).map_err(mls)?;
+        }
+        Ok(())
+    }
+
     /// Joins a group from a welcome message and returns the group id.
     pub fn join(&mut self, welcome: &[u8]) -> CryptoResult<Vec<u8>> {
         let message = MlsMessageIn::tls_deserialize_exact(welcome)

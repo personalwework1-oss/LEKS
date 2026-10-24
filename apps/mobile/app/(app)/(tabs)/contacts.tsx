@@ -93,7 +93,24 @@ export default function Contacts() {
         </View>
       </View>
 
-      <View style={{ paddingTop: 12 }}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => router.push("/group/new")}
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, marginTop: 8, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+      >
+        <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: p.accentSoft, alignItems: "center", justifyContent: "center" }}>
+          <Icon name="group" size={24} color={p.accentText} strokeWidth={2} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <AppText variant="bodyStrong">Новая группа</AppText>
+          <AppText variant="caption" muted style={{ fontSize: 14 }}>
+            До 200 человек, всё зашифровано
+          </AppText>
+        </View>
+        <Icon name="chevron" size={18} color={p.textSubtle} strokeWidth={2} />
+      </Pressable>
+
+      <View style={{ paddingTop: 4 }}>
         {search.phase === "searching" ? (
           <View style={{ padding: 20 }}>
             <ActivityIndicator color={p.textMuted} />

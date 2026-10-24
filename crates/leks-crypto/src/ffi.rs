@@ -78,6 +78,20 @@ enum Request {
     Members {
         group_id: String,
     },
+    /// Identities are "accountId:deviceId" strings, as in `members`.
+    #[serde(rename_all = "camelCase")]
+    RemoveMembers {
+        group_id: String,
+        identities: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    GroupState {
+        group_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ForgetGroup {
+        group_id: String,
+    },
     /// Encrypts a photo or file with a new key (see `file_crypto`).
     EncryptFile {
         input: String,
@@ -272,6 +286,30 @@ fn handle_open(client: &mut Client, request: Request) -> Result<(Value, bool), F
                 .map(|m| String::from_utf8_lossy(m).into_owned())
                 .collect();
             (json!({ "members": members }), false)
+        }
+        Request::RemoveMembers {
+            group_id,
+            identities,
+        } => {
+            let identities: Vec<Vec<u8>> = identities.into_iter().map(String::into_bytes).collect();
+            let commit = client.remove_members(&unb64(&group_id)?, &identities)?;
+            (json!({ "commit": b64(&commit) }), true)
+        }
+        Request::GroupState { group_id } => {
+            let group_id = unb64(&group_id)?;
+            let members: Vec<String> = client
+                .members(&group_id)?
+                .iter()
+                .map(|m| String::from_utf8_lossy(m).into_owned())
+                .collect();
+            (
+                json!({ "active": client.is_active(&group_id)?, "members": members }),
+                false,
+            )
+        }
+        Request::ForgetGroup { group_id } => {
+            client.forget_group(&unb64(&group_id)?)?;
+            (json!({}), true)
         }
         Request::Open { .. }
         | Request::Reset { .. }

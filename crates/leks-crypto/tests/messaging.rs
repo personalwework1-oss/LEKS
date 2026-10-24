@@ -196,3 +196,51 @@ fn state_survives_export_and_import() {
     assert!(Client::import_state(&broken).is_err());
     assert!(Client::import_state(b"garbage").is_err());
 }
+
+#[test]
+fn removed_member_cannot_read_new_messages() {
+    let (mut alice, mut bob, group_id) = alice_and_bob();
+    let mut carol = Client::new(b"carol").unwrap();
+    let invitation = alice
+        .add_member(&group_id, &carol.key_package().unwrap())
+        .unwrap();
+    bob.receive(&invitation.commit).unwrap();
+    carol.join(&invitation.welcome).unwrap();
+
+    let commit = alice
+        .remove_members(&group_id, &[b"carol".to_vec()])
+        .unwrap();
+    assert_eq!(
+        bob.receive(&commit).unwrap(),
+        Incoming::GroupUpdated {
+            group_id: group_id.clone()
+        }
+    );
+    carol.receive(&commit).unwrap();
+    assert!(!carol.is_active(&group_id).unwrap());
+    assert!(bob.is_active(&group_id).unwrap());
+    assert_eq!(
+        bob.members(&group_id).unwrap(),
+        vec![b"alice".to_vec(), b"bob".to_vec()]
+    );
+
+    let secret = alice.encrypt(&group_id, b"after carol left").unwrap();
+    assert!(carol.receive(&secret).is_err());
+    assert!(matches!(
+        bob.receive(&secret).unwrap(),
+        Incoming::Message { .. }
+    ));
+
+    // Nobody can remove themselves this way, or someone who is not there.
+    assert!(alice
+        .remove_members(&group_id, &[b"alice".to_vec()])
+        .is_err());
+    assert!(alice
+        .remove_members(&group_id, &[b"dave".to_vec()])
+        .is_err());
+
+    carol.forget_group(&group_id).unwrap();
+    assert!(carol.group_ids().is_empty());
+    let restored = Client::import_state(&carol.export_state()).unwrap();
+    assert!(restored.group_ids().is_empty());
+}

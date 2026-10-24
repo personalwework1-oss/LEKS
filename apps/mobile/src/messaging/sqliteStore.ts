@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import { type Attachment, type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
+import { type Attachment, type Conversation, type GroupMember, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -10,7 +10,11 @@ CREATE TABLE IF NOT EXISTS conversations (
   username TEXT,
   last_text TEXT,
   last_at INTEGER NOT NULL,
-  unread INTEGER NOT NULL DEFAULT 0
+  unread INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'direct',
+  members TEXT NOT NULL DEFAULT '[]',
+  version INTEGER NOT NULL DEFAULT 0,
+  left_group INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS conversations_peer ON conversations (peer_account_id);
 CREATE TABLE IF NOT EXISTS messages (
@@ -45,6 +49,10 @@ const UPGRADES: string[] = [
    ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}';`,
   `ALTER TABLE messages ADD COLUMN attachment TEXT;`,
+  `ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'direct';
+   ALTER TABLE conversations ADD COLUMN members TEXT NOT NULL DEFAULT '[]';
+   ALTER TABLE conversations ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE conversations ADD COLUMN left_group INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 interface ConversationRow {
@@ -55,6 +63,10 @@ interface ConversationRow {
   last_text: string | null;
   last_at: number;
   unread: number;
+  kind: "direct" | "group";
+  members: string;
+  version: number;
+  left_group: number;
 }
 
 interface MessageRow {
@@ -89,7 +101,20 @@ const toConversation = (r: ConversationRow): Conversation => ({
   lastText: r.last_text,
   lastAt: r.last_at,
   unread: r.unread,
+  kind: r.kind === "group" ? "group" : "direct",
+  members: parseMembers(r.members),
+  version: r.version,
+  left: r.left_group === 1,
 });
+
+function parseMembers(json: string): GroupMember[] {
+  try {
+    const value = JSON.parse(json) as unknown;
+    return Array.isArray(value) ? (value as GroupMember[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 const toMessage = (r: MessageRow): Message => ({
   id: r.id,
@@ -159,7 +184,7 @@ export class SqliteStore implements MessageStore {
 
   async conversationWith(peerAccountId: string) {
     const row = await this.db.getFirstAsync<ConversationRow>(
-      "SELECT * FROM conversations WHERE peer_account_id = ? ORDER BY last_at DESC LIMIT 1",
+      "SELECT * FROM conversations WHERE kind = 'direct' AND peer_account_id = ? ORDER BY last_at DESC LIMIT 1",
       [peerAccountId],
     );
     return row ? toConversation(row) : null;
@@ -167,11 +192,12 @@ export class SqliteStore implements MessageStore {
 
   async saveConversation(c: Conversation) {
     await this.db.runAsync(
-      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET peer_account_id = excluded.peer_account_id, title = excluded.title,
-         username = excluded.username, last_text = excluded.last_text, last_at = excluded.last_at, unread = excluded.unread`,
-      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread],
+         username = excluded.username, last_text = excluded.last_text, last_at = excluded.last_at, unread = excluded.unread,
+         kind = excluded.kind, members = excluded.members, version = excluded.version, left_group = excluded.left_group`,
+      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0],
     );
   }
 

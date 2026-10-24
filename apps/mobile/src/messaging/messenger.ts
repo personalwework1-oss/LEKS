@@ -6,7 +6,9 @@ import {
   type Attachment,
   type AttachmentKind,
   type Conversation,
+  type GroupMember,
   type Message,
+  MAX_GROUP_MEMBERS,
   type MessageStore,
   type OutboxItem,
   type Payload,
@@ -24,7 +26,7 @@ export interface Me {
 }
 
 export class MessengerError extends Error {
-  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed" | "too_large") {
+  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed" | "too_large" | "too_many") {
     super(code);
   }
 }
@@ -108,12 +110,45 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
       return isString(value.id) && isString(value.emoji) && (value.emoji === "" || (REACTIONS as readonly string[]).includes(value.emoji))
         ? (value as Payload)
         : null;
+    case "group_info":
+      return isString(value.title) &&
+        typeof value.version === "number" &&
+        Array.isArray(value.members) &&
+        value.members.length <= MAX_GROUP_MEMBERS &&
+        value.members.every(
+          (m: Record<string, unknown>) =>
+            m && isString(m.accountId) && isString(m.displayName) && isString(m.username) && (m.role === "admin" || m.role === "member"),
+        )
+        ? (value as Payload)
+        : null;
+    case "leave":
     case "typing":
       return value as Payload;
     default:
       return null;
   }
 }
+
+/** A chat that is not (yet) known to be a group. */
+function directChat(id: string, peerAccountId: string, at: number): Conversation {
+  return {
+    id,
+    kind: "direct",
+    peerAccountId,
+    title: "Новый чат",
+    username: null,
+    lastText: null,
+    lastAt: at,
+    unread: 0,
+    members: [],
+    version: 0,
+    left: false,
+  };
+}
+
+/** Admins first, then by name, so everyone sees the same order. */
+const sortMembers = (members: GroupMember[]) =>
+  [...members].sort((a, b) => (a.role === b.role ? a.displayName.localeCompare(b.displayName, "ru") : a.role === "admin" ? -1 : 1));
 
 /** What the chat list shows for a message. */
 export function previewOf(m: Message | null): string | null {
@@ -242,47 +277,74 @@ export class Messenger {
     if (message.kind === "welcome") {
       const groupId = await this.engine.join(message.payload);
       if (!(await this.store.conversation(groupId))) {
-        await this.store.saveConversation({
-          id: groupId,
-          peerAccountId: message.from.accountId,
-          title: "Новый чат",
-          username: null,
-          lastText: null,
-          lastAt: message.sentAt,
-          unread: 0,
-        });
+        await this.store.saveConversation(directChat(groupId, message.from.accountId, message.sentAt));
       }
       return null;
     }
 
     const result = await this.engine.receive(message.payload);
+    if (result.kind === "group_updated") {
+      // A commit may have removed me from a group.
+      const state = await this.engine.groupState(result.groupId).catch(() => null);
+      const chat = await this.store.conversation(result.groupId);
+      if (state && !state.active && chat && !chat.left) await this.store.saveConversation({ ...chat, left: true });
+      return null;
+    }
     if (result.kind !== "message") return null;
     const sender = parseIdentity(result.sender);
     const payload = decodePayload(result.plaintext);
     if (!sender || !payload) return null;
     // Only the person this chat is with (or my own other devices) can write in it.
 
-    const conversation =
-      (await this.store.conversation(result.groupId)) ??
-      ({
-        id: result.groupId,
-        peerAccountId: sender.accountId,
-        title: "Новый чат",
-        username: null,
-        lastText: null,
-        lastAt: message.sentAt,
-        unread: 0,
-      } satisfies Conversation);
-
-    if (sender.accountId !== conversation.peerAccountId && sender.accountId !== this.me.accountId) return null;
-    const fromPeer = sender.accountId === conversation.peerAccountId;
+    const conversation = (await this.store.conversation(result.groupId)) ?? directChat(result.groupId, sender.accountId, message.sentAt);
+    const mine = sender.accountId === this.me.accountId;
+    const isGroup = conversation.kind === "group";
+    // Direct chats: only the other person (or my own other phones). Groups: only current members.
+    const allowed = mine || (isGroup ? conversation.members.some((m) => m.accountId === sender.accountId) : sender.accountId === conversation.peerAccountId);
+    if (!allowed) return null;
+    // "Peer" here means anyone else in the chat.
+    const fromPeer = !mine;
+    // After leaving, only news about the group itself still counts.
+    if (conversation.left && payload.type !== "group_info") return null;
 
     switch (payload.type) {
       case "intro":
-        if (fromPeer && payload.accountId === sender.accountId) {
+        if (!isGroup && fromPeer && payload.accountId === sender.accountId) {
           await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username });
         }
         return null;
+
+      case "group_info": {
+        // The inviter turns a fresh chat into a group; after that only admins can change it.
+        const fresh = !isGroup && conversation.lastText === null && sender.accountId === conversation.peerAccountId;
+        const byAdmin = isGroup && conversation.members.some((m) => m.accountId === sender.accountId && m.role === "admin");
+        if (!(fresh || byAdmin || mine) || payload.version <= conversation.version) return null;
+        const members = sortMembers(payload.members);
+        const stillIn = members.some((m) => m.accountId === this.me.accountId);
+        await this.store.saveConversation({
+          ...conversation,
+          kind: "group",
+          title: payload.title.slice(0, 100) || "Группа",
+          username: null,
+          members,
+          version: payload.version,
+          left: conversation.left || !stillIn,
+        });
+        return null;
+      }
+
+      case "leave": {
+        if (!isGroup || mine) return null;
+        const members = conversation.members.filter((m) => m.accountId !== sender.accountId);
+        await this.store.saveConversation({ ...conversation, members });
+        // One admin (the first in the list) removes the leaver's devices and tells everyone.
+        const firstAdmin = members.find((m) => m.role === "admin");
+        if (firstAdmin?.accountId === this.me.accountId && !conversation.left) {
+          await this.removeDevices(conversation.id, sender.accountId);
+          await this.publishGroupInfo({ ...conversation, members });
+        }
+        return null;
+      }
 
       case "text": {
         const added = await this.store.addMessage({
@@ -301,7 +363,6 @@ export class Messenger {
         });
         if (!added) return null;
         // A message I sent from another of my phones is not unread and needs no receipt.
-        const mine = sender.accountId === this.me.accountId;
         if (!mine) this.stopTyping(conversation.id);
         await this.store.saveConversation({
           ...conversation,
@@ -313,7 +374,6 @@ export class Messenger {
       }
 
       case "file": {
-        const mine = sender.accountId === this.me.accountId;
         const message: Message = {
           id: payload.id,
           conversationId: conversation.id,
@@ -454,13 +514,9 @@ export class Messenger {
     await this.queue("message", invited, await this.engine.encrypt(groupId, utf8Encode(JSON.stringify(intro))), null);
 
     await this.store.saveConversation({
-      id: groupId,
-      peerAccountId: peer.accountId,
+      ...directChat(groupId, peer.accountId, this.now()),
       title: peer.displayName,
       username: peer.username,
-      lastText: null,
-      lastAt: this.now(),
-      unread: 0,
     });
     this.changed();
     void this.flush();
@@ -471,6 +527,7 @@ export class Messenger {
   async send(conversationId: string, text: string, replyTo: string | null = null): Promise<Message> {
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
+    if (conversation.left) throw new MessengerError("not_allowed");
     const body = text.slice(0, MAX_TEXT);
 
     const message: Message = {
@@ -505,6 +562,7 @@ export class Messenger {
     if (file.size > MAX_BLOB_BYTES - 1024 * 1024) throw new MessengerError("too_large");
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
+    if (conversation.left) throw new MessengerError("not_allowed");
 
     const id = this.uuid();
     const localUri = this.files.mediaUri(id, file.name);
@@ -731,6 +789,12 @@ export class Messenger {
   private async sendPayload(conversationId: string, payload: Payload, messageId: string | null, id?: string): Promise<void> {
     const recipients = await this.recipients(conversationId);
     const ciphertext = await this.engine.encrypt(conversationId, utf8Encode(JSON.stringify(payload)));
+    if (recipients.length === 0) {
+      // Nobody else is in the chat (a group of one): nothing to send, but my message counts as sent.
+      if (messageId) await this.store.setStatus(messageId, "sent");
+      this.changed();
+      return;
+    }
     await this.queue("message", recipients, ciphertext, messageId, id);
     this.changed();
     void this.flush();
@@ -784,6 +848,134 @@ export class Messenger {
       }
     }
     return true;
+  }
+
+  // ---- groups -------------------------------------------------------------
+
+  /** Creates a group with these people, with me as its admin. People without a connected phone are skipped. */
+  async createGroup(title: string, people: PublicUser[]): Promise<{ id: string; skipped: PublicUser[] }> {
+    const others = this.distinctOthers(people);
+    if (others.length + 1 > MAX_GROUP_MEMBERS) throw new MessengerError("too_many");
+    const groupId = await this.engine.createGroup();
+    const { added, skipped } = await this.invite(groupId, others);
+    const conversation: Conversation = {
+      ...directChat(groupId, this.me.accountId, this.now()),
+      kind: "group",
+      title: title.trim().slice(0, 100) || "Группа",
+      members: [this.self("admin"), ...added.map((p) => ({ accountId: p.accountId, displayName: p.displayName, username: p.username, role: "member" as const }))],
+    };
+    await this.publishGroupInfo(conversation);
+    return { id: groupId, skipped };
+  }
+
+  /** Adds people to a group I am an admin of. */
+  async addMembers(conversationId: string, people: PublicUser[]): Promise<{ skipped: PublicUser[] }> {
+    const chat = await this.adminChat(conversationId);
+    const fresh = this.distinctOthers(people).filter((p) => !chat.members.some((m) => m.accountId === p.accountId));
+    if (chat.members.length + fresh.length > MAX_GROUP_MEMBERS) throw new MessengerError("too_many");
+    const { added, skipped } = await this.invite(conversationId, fresh);
+    if (added.length > 0) {
+      await this.publishGroupInfo({
+        ...chat,
+        members: [...chat.members, ...added.map((p) => ({ accountId: p.accountId, displayName: p.displayName, username: p.username, role: "member" as const }))],
+      });
+    }
+    return { skipped };
+  }
+
+  /** Removes someone (all their devices) from a group I am an admin of. */
+  async removeMember(conversationId: string, accountId: string): Promise<void> {
+    const chat = await this.adminChat(conversationId);
+    if (accountId === this.me.accountId || !chat.members.some((m) => m.accountId === accountId)) throw new MessengerError("not_allowed");
+    await this.removeDevices(conversationId, accountId);
+    await this.publishGroupInfo({ ...chat, members: chat.members.filter((m) => m.accountId !== accountId) });
+  }
+
+  /** Makes someone an admin or a regular member; a group always keeps at least one admin. */
+  async setRole(conversationId: string, accountId: string, role: GroupMember["role"]): Promise<void> {
+    const chat = await this.adminChat(conversationId);
+    const members = chat.members.map((m) => (m.accountId === accountId ? { ...m, role } : m));
+    if (!members.some((m) => m.role === "admin") || !chat.members.some((m) => m.accountId === accountId)) throw new MessengerError("not_allowed");
+    await this.publishGroupInfo({ ...chat, members });
+  }
+
+  async renameGroup(conversationId: string, title: string): Promise<void> {
+    const chat = await this.adminChat(conversationId);
+    const next = title.trim().slice(0, 100);
+    if (!next || next === chat.title) return;
+    await this.publishGroupInfo({ ...chat, title: next });
+  }
+
+  /** Leaves a group. If I am its only admin, the next person becomes admin first. */
+  async leaveGroup(conversationId: string): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat || chat.kind !== "group" || chat.left) throw new MessengerError("not_allowed");
+    const others = chat.members.filter((m) => m.accountId !== this.me.accountId);
+    const admins = others.filter((m) => m.role === "admin");
+    let members = others;
+    if (admins.length === 0 && others.length > 0) {
+      members = others.map((m, i) => (i === 0 ? { ...m, role: "admin" as const } : m));
+      await this.publishGroupInfo({ ...chat, members: [...members, this.self("admin")] });
+    }
+    await this.sendPayload(conversationId, { v: 1, type: "leave" }, null);
+    const latest = (await this.store.conversation(conversationId)) ?? chat;
+    await this.store.saveConversation({ ...latest, members, left: true });
+    this.changed();
+  }
+
+  private self(role: GroupMember["role"]): GroupMember {
+    return { accountId: this.me.accountId, displayName: this.me.displayName, username: this.me.username, role };
+  }
+
+  private distinctOthers(people: PublicUser[]): PublicUser[] {
+    const seen = new Set<string>([this.me.accountId]);
+    return people.filter((p) => !seen.has(p.accountId) && seen.add(p.accountId));
+  }
+
+  private async adminChat(conversationId: string): Promise<Conversation> {
+    const chat = await this.store.conversation(conversationId);
+    const me = chat?.members.find((m) => m.accountId === this.me.accountId);
+    if (!chat || chat.kind !== "group" || chat.left || me?.role !== "admin") throw new MessengerError("not_allowed");
+    return chat;
+  }
+
+  /** Brings every device of these people into the MLS group. */
+  private async invite(groupId: string, people: PublicUser[]): Promise<{ added: PublicUser[]; skipped: PublicUser[] }> {
+    const added: PublicUser[] = [];
+    const skipped: PublicUser[] = [];
+    for (const person of people) {
+      const claimed = await this.transport.request({ type: "claim_key_packages", accountId: person.accountId }, "key_packages");
+      if (claimed.items.length === 0) {
+        skipped.push(person);
+        continue;
+      }
+      for (const item of claimed.items) {
+        // Everyone already in the group must apply the change.
+        const before = await this.recipients(groupId);
+        const invitation = await this.engine.addMember(groupId, item.keyPackage);
+        if (before.length > 0) await this.queue("commit", before, invitation.commit, null);
+        await this.queue("welcome", [item.deviceId], invitation.welcome, null);
+      }
+      added.push(person);
+    }
+    return { added, skipped };
+  }
+
+  /** Takes all devices of an account out of the MLS group; they get the commit too, so they know. */
+  private async removeDevices(groupId: string, accountId: string): Promise<void> {
+    const state = await this.engine.groupState(groupId);
+    const identities = state.members.filter((identity) => parseIdentity(identity)?.accountId === accountId);
+    if (identities.length === 0) return;
+    const before = await this.recipients(groupId);
+    const commit = await this.engine.removeMembers(groupId, identities);
+    if (before.length > 0) await this.queue("commit", before, commit, null);
+  }
+
+  /** Saves the next version of the group's name and members and sends it to everyone in it. */
+  private async publishGroupInfo(chat: Conversation): Promise<void> {
+    const next: Conversation = { ...chat, members: sortMembers(chat.members), version: chat.version + 1 };
+    await this.store.saveConversation(next);
+    await this.sendPayload(next.id, { v: 1, type: "group_info", title: next.title, members: next.members, version: next.version }, null);
   }
 
   /** Sign-out: forget chats and keys on this phone. */
