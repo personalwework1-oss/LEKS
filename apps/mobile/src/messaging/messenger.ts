@@ -854,7 +854,9 @@ export class Messenger {
       this.changed();
       return;
     }
-    await this.queue("message", recipients, ciphertext, messageId, id);
+    // Only things a person should see wake their phone; receipts, reactions and edits wait.
+    const wake = payload.type === "text" || payload.type === "file" ? "message" : payload.type === "call_invite" ? "call" : null;
+    await this.queue("message", recipients, ciphertext, messageId, id, wake);
     this.changed();
     void this.flush();
   }
@@ -865,10 +867,11 @@ export class Messenger {
     payload: string,
     messageId: string | null,
     id: string = this.uuid(),
+    wake: OutboxItem["wake"] = null,
   ): Promise<void> {
     // Strictly increasing, so the outbox keeps the order things were created in.
     this.lastQueued = Math.max(this.now(), this.lastQueued + 1);
-    await this.store.enqueue({ id, createdAt: this.lastQueued, kind, recipients, payload, messageId });
+    await this.store.enqueue({ id, createdAt: this.lastQueued, kind, recipients, payload, messageId, wake });
   }
 
   /** Sends whatever is waiting in the outbox, in order; stops at the first failure and resumes later. */
@@ -896,7 +899,14 @@ export class Messenger {
     for (const item of await this.store.outbox()) {
       if (this.transport.connectionState !== "online") return false;
       try {
-        await this.transport.sendMessage({ type: "send", id: item.id, recipients: item.recipients, kind: item.kind, payload: item.payload });
+        await this.transport.sendMessage({
+          type: "send",
+          id: item.id,
+          recipients: item.recipients,
+          kind: item.kind,
+          payload: item.payload,
+          ...(item.wake ? { wake: item.wake } : {}),
+        });
       } catch {
         return false;
       }

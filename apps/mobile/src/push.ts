@@ -23,6 +23,14 @@ export async function registerForPush(realtime: Realtime): Promise<void> {
       vibrationPattern: [0, 250],
       showBadge: true,
     });
+    await Notifications.setNotificationChannelAsync("calls", {
+      name: "Звонки",
+      importance: Notifications.AndroidImportance.MAX,
+      sound: "default",
+      vibrationPattern: [0, 800, 600, 800, 600, 800],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      showBadge: false,
+    });
     let { status } = await Notifications.getPermissionsAsync();
     if (status === "undetermined") status = (await Notifications.requestPermissionsAsync()).status;
     if (status !== "granted") return;

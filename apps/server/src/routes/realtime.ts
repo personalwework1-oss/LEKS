@@ -189,7 +189,10 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
             payload: Buffer.from(frame.payload, "base64url"),
           });
           send({ type: "sent", id: frame.id, accepted: result.accepted, unknown: result.unknown });
-          hub.notifyQueued(result.created.map((row) => row.recipientDeviceId));
+          hub.notifyQueued(
+            result.created.map((row) => row.recipientDeviceId),
+            frame.wake,
+          );
           return;
         }
 

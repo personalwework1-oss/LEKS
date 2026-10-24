@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   kind TEXT NOT NULL,
   recipients TEXT NOT NULL,
   payload TEXT NOT NULL,
-  message_id TEXT
+  message_id TEXT,
+  wake TEXT
 );
 `;
 
@@ -53,6 +54,7 @@ const UPGRADES: string[] = [
    ALTER TABLE conversations ADD COLUMN members TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE conversations ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE conversations ADD COLUMN left_group INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE outbox ADD COLUMN wake TEXT;`,
 ];
 
 interface ConversationRow {
@@ -91,6 +93,7 @@ interface OutboxRow {
   recipients: string;
   payload: string;
   message_id: string | null;
+  wake: "message" | "call" | null;
 }
 
 const toConversation = (r: ConversationRow): Conversation => ({
@@ -277,8 +280,8 @@ export class SqliteStore implements MessageStore {
 
   async enqueue(item: OutboxItem) {
     await this.db.runAsync(
-      "INSERT OR REPLACE INTO outbox (id, created_at, kind, recipients, payload, message_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [item.id, item.createdAt, item.kind, JSON.stringify(item.recipients), item.payload, item.messageId],
+      "INSERT OR REPLACE INTO outbox (id, created_at, kind, recipients, payload, message_id, wake) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [item.id, item.createdAt, item.kind, JSON.stringify(item.recipients), item.payload, item.messageId, item.wake ?? null],
     );
   }
 
@@ -291,6 +294,7 @@ export class SqliteStore implements MessageStore {
       recipients: JSON.parse(r.recipients) as string[],
       payload: r.payload,
       messageId: r.message_id,
+      wake: r.wake,
     }));
   }
 

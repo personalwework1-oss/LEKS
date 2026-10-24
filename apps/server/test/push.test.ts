@@ -44,6 +44,16 @@ describe("Android push", () => {
     expect(Object.keys(message).sort()).toEqual(["android", "notification", "token"]);
   });
 
+  it("rings calls on their own channel, separately from messages", async () => {
+    const { notifier, calls } = setup({ d1: { provider: "fcm", token: "t" } });
+    await notifier.notify("d1", "message");
+    await notifier.notify("d1", "call");
+    const sent = calls.filter((c) => c.url.includes("messages:send")).map((c) => JSON.parse(c.body).message);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toMatchObject({ notification: { body: "Входящий звонок" }, android: { ttl: "45s", notification: { channel_id: "calls" } } });
+    expect(sent[0].android.notification.channel_id).toBe("messages");
+  });
+
   it("reuses the access token and sends at most one signal per device in a short time", async () => {
     const { notifier, calls, advance } = setup({ d1: { provider: "fcm", token: "t" } });
     await notifier.notify("d1");

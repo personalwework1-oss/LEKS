@@ -14,7 +14,7 @@ describe.skipIf(!databaseUrl)("device sign-in, keys and message delivery", () =>
     app = await buildApp({
       pool,
       purgeIntervalMs: 0,
-      push: { notify: async (deviceId) => void pushed.push(deviceId) },
+      push: { notify: async (deviceId, reason) => void pushed.push(deviceId, `${reason}:${deviceId}`) },
     });
     await app.ready();
   });
@@ -110,7 +110,7 @@ describe.skipIf(!databaseUrl)("device sign-in, keys and message delivery", () =>
     const first = { id: randomUUID(), payload: randomPayload(100) };
     const second = { id: randomUUID(), payload: randomPayload(200) };
     for (const message of [first, second]) {
-      aliceClient.send({ type: "send", id: message.id, recipients: [bob.session.deviceId], kind: "message", payload: message.payload });
+      aliceClient.send({ type: "send", id: message.id, recipients: [bob.session.deviceId], kind: "message", payload: message.payload, wake: "message" });
       expect(await aliceClient.next("sent")).toEqual({
         type: "sent",
         id: message.id,
@@ -143,6 +143,20 @@ describe.skipIf(!databaseUrl)("device sign-in, keys and message delivery", () =>
     const bobThird = await TestClient.signedIn(app, bob.session, bob.key);
     expect(await bobThird.receives("deliver")).toBe(false);
     bobThird.close();
+    aliceClient.close();
+  });
+
+  it("wakes offline devices only when the sender asks, and says whether it is a call", async () => {
+    const alice = await register(app);
+    const bob = await register(app);
+    const aliceClient = await TestClient.signedIn(app, alice.session, alice.key);
+    for (const [wake, id] of [[undefined, randomUUID()], ["call", randomUUID()]] as const) {
+      aliceClient.send({ type: "send", id, recipients: [bob.session.deviceId], kind: "message", payload: randomPayload(), ...(wake ? { wake } : {}) });
+      await aliceClient.next("sent");
+    }
+    // A receipt or a reaction (no wake) never pushes; a call does.
+    expect(pushed.filter((entry) => entry === `message:${bob.session.deviceId}`)).toHaveLength(0);
+    expect(pushed).toContain(`call:${bob.session.deviceId}`);
     aliceClient.close();
   });
 

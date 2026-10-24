@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import type { WakeReason } from "@leks/protocol";
 import type { PushNotifier } from "../hub.js";
 import type { Store } from "../store.js";
 
@@ -21,6 +22,25 @@ type Fetch = (url: string, init: { method: string; headers: Record<string, strin
 
 /** One signal per device at most this often; the app fetches everything when it opens anyway. */
 export const PUSH_INTERVAL_MS = 20_000;
+/** A repeated call invite (for example, a second device) does not ring twice. */
+export const CALL_INTERVAL_MS = 5_000;
+
+const chatMessage = (token: string) => ({
+  token,
+  notification: { title: "LEKS", body: "Новое сообщение" },
+  android: { priority: "HIGH", collapse_key: "messages", notification: { channel_id: "messages", tag: "messages" } },
+});
+
+/** Rings on its own loud channel; useless after the call has stopped ringing, so it expires quickly. */
+const callMessage = (token: string) => ({
+  token,
+  notification: { title: "LEKS", body: "Входящий звонок" },
+  android: {
+    priority: "HIGH",
+    ttl: "45s",
+    notification: { channel_id: "calls", tag: "call", notification_priority: "PRIORITY_MAX", visibility: "PUBLIC", default_sound: true },
+  },
+});
 
 const b64url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 
@@ -69,23 +89,19 @@ export class FcmNotifier implements PushNotifier {
     await this.token();
   }
 
-  async notify(deviceId: string): Promise<void> {
-    const last = this.lastSent.get(deviceId) ?? 0;
-    if (this.now() - last < PUSH_INTERVAL_MS) return;
+  async notify(deviceId: string, reason: WakeReason = "message"): Promise<void> {
+    // Calls always ring; messages are bundled into one signal per short interval.
+    const key = `${reason}:${deviceId}`;
+    const last = this.lastSent.get(key) ?? 0;
+    if (this.now() - last < (reason === "call" ? CALL_INTERVAL_MS : PUSH_INTERVAL_MS)) return;
     const target = await this.store.pushToken(deviceId);
     if (!target || target.provider !== "fcm") return;
-    this.lastSent.set(deviceId, this.now());
+    this.lastSent.set(key, this.now());
 
     const response = await this.fetchImpl(`https://fcm.googleapis.com/v1/projects/${this.account.project_id}/messages:send`, {
       method: "POST",
       headers: { authorization: `Bearer ${await this.token()}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        message: {
-          token: target.token,
-          notification: { title: "LEKS", body: "Новое сообщение" },
-          android: { priority: "HIGH", collapse_key: "messages", notification: { channel_id: "messages", tag: "messages" } },
-        },
-      }),
+      body: JSON.stringify({ message: reason === "call" ? callMessage(target.token) : chatMessage(target.token) }),
     });
     if (response.status === 404 || response.status === 400) {
       // The app was removed or the token is old: forget it.

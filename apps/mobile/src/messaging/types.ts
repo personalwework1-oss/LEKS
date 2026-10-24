@@ -97,6 +97,8 @@ export interface OutboxItem {
   payload: string;
   /** The chat message this delivers, if any, so its status can be updated. */
   messageId: string | null;
+  /** Whether an offline recipient gets a push for it. */
+  wake?: "message" | "call" | null;
 }
 
 /** Where chats live on the phone. */

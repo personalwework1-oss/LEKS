@@ -97,6 +97,7 @@ export const MessageKind = z.enum(["welcome", "commit", "message"]);
 export type MessageKind = z.infer<typeof MessageKind>;
 
 export const PushProvider = z.enum(["apns", "fcm"]);
+export type WakeReason = "message" | "call";
 export type PushProvider = z.infer<typeof PushProvider>;
 
 /**
@@ -197,6 +198,12 @@ export const ClientFrame = z.discriminatedUnion("type", [
     recipients: z.array(Id).min(1).max(1000),
     kind: MessageKind,
     payload: base64url(base64urlLength(MAX_PAYLOAD_BYTES)),
+    /**
+     * Whether to wake recipients that are offline with a push: "message" for
+     * something they should see, "call" for a ringing call. Left out for
+     * receipts, typing, reactions and the like, which wait until the app opens.
+     */
+    wake: z.enum(["message", "call"]).optional(),
   }),
   /** Confirms messages were stored on the device; the server then deletes them. */
   z.object({ type: z.literal("ack"), ids: z.array(z.number().int().positive()).min(1).max(500) }),

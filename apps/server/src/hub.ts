@@ -1,4 +1,4 @@
-import { CloseCode, type DeliveredMessage, type ServerFrame } from "@leks/protocol";
+import { CloseCode, type DeliveredMessage, type ServerFrame, type WakeReason } from "@leks/protocol";
 import type { FastifyBaseLogger } from "fastify";
 import type { Store } from "./store.js";
 
@@ -23,7 +23,7 @@ export interface DeviceConnection {
  * when the app credentials exist; until then nothing is sent.
  */
 export interface PushNotifier {
-  notify(deviceId: string): Promise<void>;
+  notify(deviceId: string, reason: WakeReason): Promise<void>;
 }
 
 export const noPush: PushNotifier = { notify: async () => undefined };
@@ -69,13 +69,14 @@ export class Hub {
   }
 
   /** New messages were queued for these devices: deliver now, or send a push signal. */
-  notifyQueued(deviceIds: string[]): void {
+  /** Delivers to connected devices; offline ones get a push only when the sender asked to wake them. */
+  notifyQueued(deviceIds: string[], wake?: WakeReason): void {
     for (const deviceId of new Set(deviceIds)) {
       const connections = this.connections.get(deviceId);
       if (connections && connections.size > 0) {
         for (const connection of connections) this.deliver(connection);
-      } else {
-        this.push.notify(deviceId).catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
+      } else if (wake) {
+        this.push.notify(deviceId, wake).catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
       }
     }
   }

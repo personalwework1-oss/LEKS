@@ -147,6 +147,7 @@ class FakeServer {
   phones = new Map<string, Phone>();
   nextId = 1;
   sends: string[] = [];
+  wakes: (string | null)[] = [];
   tickets = new Map<string, string>();
   blobs = new Map<string, Buffer>();
   failUploads = false;
@@ -198,6 +199,7 @@ class Phone {
       sendMessage: async (frame) => {
         if (!phone.online) throw new Error("offline");
         server.sends.push(frame.id);
+        server.wakes.push(frame.wake ?? null);
         for (const deviceId of frame.recipients) {
           server.phones.get(deviceId)?.inbox.push({
             id: server.nextId++,
@@ -370,6 +372,23 @@ describe("message features", () => {
     const before = b.server.sends.length;
     await b.messenger.markRead(chatId);
     expect(b.server.sends.length).toBe(before);
+  });
+
+  it("wakes the other phone only for messages and calls, not for receipts or reactions", async () => {
+    const { a, b, server, chatId } = await chatting();
+    await a.messenger.send(chatId, "привет");
+    await settle();
+    expect(server.wakes.at(-1)).toBe("message");
+    const before = server.wakes.length;
+    await b.deliver(); // queues a "delivered" receipt
+    await b.messenger.markRead(chatId); // and a "read" one
+    const [message] = await b.messenger.messages(chatId);
+    await b.messenger.react(message!.id, "👍");
+    await settle();
+    expect(server.wakes.slice(before).every((w) => w === null)).toBe(true);
+    await a.messenger.sendCallSignal(chatId, { v: 1, type: "call_invite", callId: "c1", video: false, key: "k", sentAt: 1 });
+    await settle();
+    expect(server.wakes.at(-1)).toBe("call");
   });
 
   it("answers a message with a quote", async () => {
