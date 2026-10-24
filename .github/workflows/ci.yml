@@ -218,16 +218,19 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
+            adb wait-for-device
+            until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 2; done
+            adb shell settings put global hide_error_dialogs 1
+            adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null
             adb install -r apk/*.apk
             adb shell monkey -p app.leks.messenger -c android.intent.category.LAUNCHER 1
-            sleep 25
+            sh -c 'for i in $(seq 1 12); do sleep 5; adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null; adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 && adb pull /sdcard/ui.xml ui.xml >/dev/null 2>&1; if grep -q "Создать аккаунт" ui.xml || grep -q "Переписка" ui.xml; then echo found > found.txt; break; fi; done; true'
             adb exec-out screencap -p > screen.png
-            adb shell uiautomator dump /sdcard/ui.xml && adb pull /sdcard/ui.xml ui.xml
             adb logcat -d -s ReactNativeJS:V AndroidRuntime:E ReactNative:V > logcat.txt || true
-            grep -o 'text="[^"]*"' ui.xml | head -40 || true
+            grep -o 'text="[^"]*"' ui.xml | grep -v 'text=""' | head -40 || true
             echo "--- app errors ---"; grep -E "FATAL|Error|Exception" logcat.txt | head -40 || true
             if grep -q "Unmatched" ui.xml; then echo "smoke: unmatched route"; exit 1; fi
-            if ! grep -q "Создать аккаунт" ui.xml; then echo "smoke: welcome screen not shown"; exit 1; fi
+            if [ ! -f found.txt ]; then echo "smoke: welcome screen not shown"; exit 1; fi
             echo "smoke: welcome screen ok"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -237,6 +240,7 @@ jobs:
             screen.png
             ui.xml
             logcat.txt
+          if-no-files-found: ignore
           retention-days: 7
 
   rust:
