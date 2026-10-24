@@ -361,23 +361,7 @@ export class Messenger {
         }
         return null;
 
-      case "file":
-      return isString(value.id) &&
-        typeof value.sentAt === "number" &&
-        isString(value.caption) &&
-        isString(value.blobId) &&
-        isString(value.key) &&
-        KINDS.includes(value.kind as AttachmentKind) &&
-        isString(value.name) &&
-        isString(value.mime) &&
-        typeof value.size === "number" &&
-        (value.replyTo === undefined || isString(value.replyTo)) &&
-        (value.width === undefined || typeof value.width === "number") &&
-        (value.height === undefined || typeof value.height === "number") &&
-        (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB))
-        ? (value as Payload)
-        : null;
-    case "edit": {
+      case "edit": {
         const target = await this.store.message(payload.id);
         if (!target || target.deleted || target.conversationId !== conversation.id || target.senderAccountId !== sender.accountId) return null;
         await this.store.updateMessage({ ...target, text: payload.text.slice(0, MAX_TEXT), editedAt: payload.editedAt });
