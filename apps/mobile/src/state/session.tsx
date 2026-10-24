@@ -14,6 +14,7 @@ import { CallManager } from "../calls/CallManager";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
+import { registerForPush } from "../push";
 import { type LockSettings, NO_LOCK, secure, type StoredSession } from "../storage/secure";
 
 /**
@@ -89,7 +90,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const created = new Messenger(engine, realtime, store, session, () => Crypto.randomUUID(), Date.now, new ExpoFiles(API_URL, session.deviceId));
       realtime.setHandlers({
         onMessages: (messages) => void created.onMessages(messages),
-        onAuthenticated: (available) => void created.onAuthenticated(available).catch((e) => console.warn("key packages", e)),
+        onAuthenticated: (available) => {
+          void created.onAuthenticated(available).catch((e) => console.warn("key packages", e));
+          void registerForPush(realtime);
+        },
       });
       const callManager = new CallManager({
         myAccountId: session.accountId,

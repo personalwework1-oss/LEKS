@@ -16,6 +16,8 @@ describe("config", () => {
     const config = loadConfig({ DATABASE_URL: "postgres://localhost/leks" });
     expect(config.PORT).toBe(8080);
     expect(config.LOG_LEVEL).toBe("info");
+    // An empty value from docker compose means "not set".
+    expect(loadConfig({ DATABASE_URL: "postgres://localhost/leks", FCM_SERVICE_ACCOUNT: "" }).FCM_SERVICE_ACCOUNT).toBeUndefined();
   });
 });
 

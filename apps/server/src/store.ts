@@ -417,6 +417,10 @@ export class Store {
     );
   }
 
+  async deletePushToken(deviceId: string): Promise<void> {
+    await this.pool.query("DELETE FROM push_tokens WHERE device_id = $1", [deviceId]);
+  }
+
   async pushToken(deviceId: string): Promise<{ provider: PushProvider; token: string } | null> {
     const { rows } = await this.pool.query<{ provider: PushProvider; token: string }>(
       "SELECT provider, token FROM push_tokens WHERE device_id = $1",

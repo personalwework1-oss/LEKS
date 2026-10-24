@@ -72,16 +72,21 @@ jobs:
       - name: Install and start
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FCM: ${{ secrets.FCM_SERVICE_ACCOUNT }}
           TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           exec > >(tee -a /tmp/deploy.log) 2>&1
           scp -q deploy/setup.sh deploy/docker-compose.yml deploy/Caddyfile deploy/livekit.yaml "root@$SERVER_IP:/tmp/"
           ssh "root@$SERVER_IP" "LEKS_HOST=$LEKS_HOST SERVER_IP=$SERVER_IP bash /tmp/setup.sh && mv /tmp/docker-compose.yml /tmp/Caddyfile /tmp/livekit.yaml /opt/leks/ && rm /tmp/setup.sh"
+          # Base64 here, so the key's quotes and line breaks never meet a shell.
+          FCM_B64=$(printf '%s' "$FCM" | base64 -w0)
           ssh "root@$SERVER_IP" bash -s <<SCRIPT
             set -euo pipefail
             cd /opt/leks
             grep -v '^SERVER_IMAGE=' .env > .env.new || true
             echo "SERVER_IMAGE=$IMAGE:$TAG" >> .env.new
+            grep -v '^FCM_SERVICE_ACCOUNT=' .env.new > .env.tmp || true; mv .env.tmp .env.new
+            if [ -n "$FCM_B64" ]; then echo "FCM_SERVICE_ACCOUNT=$FCM_B64" >> .env.new; fi
             mv .env.new .env && chmod 600 .env
             echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
             docker compose pull -q

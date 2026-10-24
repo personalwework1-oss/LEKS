@@ -1,16 +1,21 @@
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createPool, migrate } from "./db.js";
+import { FcmNotifier, parseServiceAccount } from "./push/fcm.js";
+import type { Store } from "./store.js";
 
 const config = loadConfig();
 const pool = createPool(config.DATABASE_URL);
 await migrate(pool);
 
+// The notifier needs the store, which the app creates; it is attached right after.
+const account = config.FCM_SERVICE_ACCOUNT ? parseServiceAccount(config.FCM_SERVICE_ACCOUNT) : null;
+const pushFor = account ? (store: Store) => new FcmNotifier(store, account) : undefined;
 const calls =
   config.LIVEKIT_URL && config.LIVEKIT_API_KEY && config.LIVEKIT_API_SECRET
     ? { url: config.LIVEKIT_URL, apiKey: config.LIVEKIT_API_KEY, apiSecret: config.LIVEKIT_API_SECRET }
     : null;
-const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL }, blobDir: config.BLOB_DIR, calls });
+const app = await buildApp({ pool, logger: { level: config.LOG_LEVEL }, blobDir: config.BLOB_DIR, calls, push: pushFor });
 await app.listen({ host: config.HOST, port: config.PORT });
 
 let stopping = false;

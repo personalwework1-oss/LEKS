@@ -26,6 +26,7 @@ services:
       LIVEKIT_URL: wss://${LEKS_HOST}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?}
+      FCM_SERVICE_ACCOUNT: ${FCM_SERVICE_ACCOUNT:-}
     volumes:
       - blobs:/data/blobs
     depends_on:

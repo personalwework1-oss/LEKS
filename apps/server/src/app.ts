@@ -15,7 +15,8 @@ import { Store } from "./store.js";
 export interface AppOptions {
   pool: pg.Pool;
   logger?: FastifyServerOptions["logger"];
-  push?: PushNotifier;
+  /** A push sender, or a function that builds one from the store. */
+  push?: PushNotifier | ((store: Store) => PushNotifier);
   /** How often expired messages are deleted; 0 turns the job off (tests). */
   purgeIntervalMs?: number;
   /** Folder for encrypted files. */
@@ -61,7 +62,7 @@ export async function buildApp({
   });
 
   const store = new Store(pool);
-  const hub = new Hub(store, push, app.log);
+  const hub = new Hub(store, typeof push === "function" ? push(store) : push, app.log);
   app.decorate("store", store);
   app.decorate("hub", hub);
   const blobs = new BlobStorage(blobDir);

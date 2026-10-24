@@ -10,6 +10,11 @@ const Env = z.object({
   LIVEKIT_URL: z.string().url().optional(),
   LIVEKIT_API_KEY: z.string().min(1).optional(),
   LIVEKIT_API_SECRET: z.string().min(32).optional(),
+  /** Android push: a Firebase service account key (JSON or its base64). Without it no pushes are sent. */
+  FCM_SERVICE_ACCOUNT: z
+    .string()
+    .optional()
+    .transform((value) => value || undefined),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 

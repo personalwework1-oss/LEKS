@@ -139,6 +139,12 @@ jobs:
         run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
       - name: Build the shared protocol
         run: pnpm --filter @leks/protocol run build
+      - name: Add the Firebase file for push (if the secret is set)
+        working-directory: apps/mobile
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json; echo "push: on"; else echo "push: off (no GOOGLE_SERVICES_JSON secret)"; fi
       - name: Generate the native Android project
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --no-install
