@@ -195,6 +195,50 @@ jobs:
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 80
           ls -d build/Build/Products/Release-iphonesimulator/*.app && echo "app-release ios simulator build ok"
 
+  android-smoke:
+    name: Android app starts (emulator)
+    needs: android-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: leks-android-apk
+          path: apk
+      - name: Let the emulator use hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install, open and look at the first screen
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            adb install -r apk/*.apk
+            adb shell monkey -p app.leks.messenger -c android.intent.category.LAUNCHER 1
+            sleep 25
+            adb exec-out screencap -p > screen.png
+            adb shell uiautomator dump /sdcard/ui.xml && adb pull /sdcard/ui.xml ui.xml
+            adb logcat -d -s ReactNativeJS:V AndroidRuntime:E ReactNative:V > logcat.txt || true
+            grep -o 'text="[^"]*"' ui.xml | head -40 || true
+            echo "--- app errors ---"; grep -E "FATAL|Error|Exception" logcat.txt | head -40 || true
+            if grep -q "Unmatched" ui.xml; then echo "smoke: unmatched route"; exit 1; fi
+            if ! grep -q "Создать аккаунт" ui.xml; then echo "smoke: welcome screen not shown"; exit 1; fi
+            echo "smoke: welcome screen ok"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke
+          path: |
+            screen.png
+            ui.xml
+            logcat.txt
+          retention-days: 7
+
   rust:
     name: Encryption core
     runs-on: ubuntu-latest
@@ -261,12 +305,17 @@ jobs:
   report-builds:
     name: Report (app builds)
     if: always() && github.event_name == 'push'
-    needs: [android-app, ios-app]
+    needs: [android-app, ios-app, android-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
     steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: android-smoke
+          path: smoke
       - name: Publish results and failed logs to the ci-logs branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,7 +323,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           SHA: ${{ github.sha }}
         run: |
-          mkdir report && cd report
+          mkdir report && cp -r smoke report/ 2>/dev/null || true; cd report
           {
             echo "# CI report for $SHA"
             echo
@@ -292,7 +341,7 @@ jobs:
               echo "## $name ($conclusion)"
               echo
               echo '```'
-              grep -E "test result:|Tests +[0-9]|Tests:|Test Suites:|Test Files|✓|✗|×|FAIL|libleks_crypto\.(so|a)|app-release" "job-$id.full" | sed -E 's/^[0-9TZ:.-]+ //' | tail -n 60 || true
+              grep -E "test result:|FAIL|libleks_crypto\.(so|a)|app-release|push: |smoke:|text=\"|FATAL|Exception" "job-$id.full" | sed -E 's/^[0-9TZ:.-]+ //' | tail -n 60 || true
               echo '```'
             } >> README.md
             if [ "$conclusion" = "failure" ]; then tail -n 400 "job-$id.full" > "job-$id.log"; fi

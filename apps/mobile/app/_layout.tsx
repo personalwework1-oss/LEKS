@@ -51,6 +51,7 @@ function Navigation() {
         <Stack.Protected guard={status === "ready"}>
           <Stack.Screen name="(app)" />
         </Stack.Protected>
+        <Stack.Screen name="+not-found" options={{ animation: "none" }} />
       </Stack>
     </>
   );
