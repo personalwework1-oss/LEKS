@@ -1,4 +1,5 @@
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
 import { Alert, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SettingsGroup } from "@/components/SettingsList";
@@ -6,11 +7,19 @@ import { AppText, Avatar } from "@/components/ui";
 import { APP_VERSION } from "@/config";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
+import { LeksCalls } from "../../../modules/leks-calls";
 
 export default function Settings() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
   const { session, lock, biometricLabel, signOut } = useSession();
+  // Android 14+: calls may cover the lock screen only after the person allows it.
+  const [lockScreenCalls, setLockScreenCalls] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setLockScreenCalls(LeksCalls?.canCoverLockScreen() ?? true);
+    }, []),
+  );
   if (!session) return null;
 
   const lockValue = lock.method === "none" ? "Выкл." : lock.method === "biometric" ? (biometricLabel ?? "Биометрия") : "Код-пароль";
@@ -44,6 +53,17 @@ export default function Settings() {
         </View>
       </View>
 
+      {lockScreenCalls ? null : (
+        <SettingsGroup
+          title="Звонки"
+          rows={[{ title: "Звонки на заблокированном экране", value: "Разрешить", onPress: () => LeksCalls?.openFullScreenSettings() }]}
+          footer={
+            <AppText variant="caption" muted style={{ marginHorizontal: 4, marginTop: 6 }}>
+              Чтобы входящий звонок появлялся на весь экран, даже когда телефон заблокирован.
+            </AppText>
+          }
+        />
+      )}
       <SettingsGroup title="Приватность" rows={[{ title: "Блокировка приложения", value: lockValue, onPress: () => router.push("/settings/lock") }]} />
       <SettingsGroup
         title="Безопасность"

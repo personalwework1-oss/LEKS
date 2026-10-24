@@ -11,6 +11,7 @@ import { DeviceKey } from "../crypto/deviceKey";
 import { NativeEngine } from "../crypto/engine";
 import { identityOf, Messenger } from "../messaging/messenger";
 import { CallManager } from "../calls/CallManager";
+import { LeksCalls } from "../../modules/leks-calls";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
@@ -82,6 +83,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!session || !realtime || !LeksCrypto) return;
     const native = LeksCrypto;
     let cancelled = false;
+    let appStateSubscription: { remove(): void } | null = null;
     (async () => {
       const engine = new NativeEngine((request) => native.call(request), `${native.stateDirectory()}/${session.deviceId}.mls`);
       await engine.open(identityOf(session));
@@ -109,11 +111,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
       });
       created.onCall((signal) => callManager.receive(signal));
+      // Opened from the call notification's Answer / Decline buttons.
+      const takeAction = () => {
+        const action = LeksCalls?.takePendingAction();
+        if (action) callManager.expect(action);
+      };
+      takeAction();
+      appStateSubscription = AppState.addEventListener("change", (next) => next === "active" && takeAction());
       setMessenger(created);
       setCalls(callManager);
     })().catch((error) => console.warn("encryption core failed to open", error));
     return () => {
       cancelled = true;
+      appStateSubscription?.remove();
       setMessenger(null);
       setCalls(null);
     };
