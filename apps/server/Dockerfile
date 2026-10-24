@@ -9,7 +9,8 @@ COPY packages/protocol packages/protocol
 COPY apps/server apps/server
 # Only the app's manifest, so the lockfile matches the workspace; its packages are not installed.
 COPY apps/mobile/package.json apps/mobile/package.json
-RUN pnpm install --frozen-lockfile --filter "@leks/server..."
+# The lockfile may lag one commit behind (the Lockfiles job updates it right after a push).
+RUN pnpm install --frozen-lockfile --filter "@leks/server..." || pnpm install --no-frozen-lockfile --filter "@leks/server..."
 RUN pnpm --filter @leks/protocol run build && pnpm --filter @leks/server run build
 
 FROM node:22-bookworm-slim
