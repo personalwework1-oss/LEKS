@@ -41,7 +41,7 @@
       ]
     ],
     "extra": {
-      "apiUrl": "http://localhost:8080"
+      "apiUrl": "https://188-245-92-101.sslip.io"
     },
     "experiments": {
       "typedRoutes": false,

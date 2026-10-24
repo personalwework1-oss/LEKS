@@ -1,0 +1,116 @@
+name: Deploy
+
+# After CI passes on main, the new server is built and started on the test server.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  SERVER_IP: 188.245.92.101
+  # Free name that points at the IP, so HTTPS works before a domain is connected.
+  LEKS_HOST: 188-245-92-101.sslip.io
+  IMAGE: ghcr.io/personalwework1-oss/leks-server
+
+jobs:
+  deploy:
+    name: Deploy to the test server
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Check the deploy key is set
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Add the DEPLOY_SSH_KEY secret (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build the server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha || github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Connect to the server
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          exec > >(tee -a /tmp/deploy.log) 2>&1
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 "$SERVER_IP" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes "root@$SERVER_IP" true
+
+      - name: Install and start
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          exec > >(tee -a /tmp/deploy.log) 2>&1
+          scp -q deploy/setup.sh deploy/docker-compose.yml deploy/Caddyfile "root@$SERVER_IP:/tmp/"
+          ssh "root@$SERVER_IP" "LEKS_HOST=$LEKS_HOST bash /tmp/setup.sh && mv /tmp/docker-compose.yml /tmp/Caddyfile /opt/leks/ && rm /tmp/setup.sh"
+          ssh "root@$SERVER_IP" bash -s <<SCRIPT
+            set -euo pipefail
+            cd /opt/leks
+            grep -v '^SERVER_IMAGE=' .env > .env.new || true
+            echo "SERVER_IMAGE=$IMAGE:$TAG" >> .env.new
+            mv .env.new .env && chmod 600 .env
+            echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+            docker compose pull -q
+            docker logout ghcr.io >/dev/null
+            docker compose up -d --remove-orphans
+            docker image prune -af --filter "until=168h" >/dev/null || true
+            docker compose ps
+          SCRIPT
+
+      - name: Check it answers over HTTPS
+        run: |
+          exec > >(tee -a /tmp/deploy.log) 2>&1
+          for i in $(seq 1 40); do
+            if body=$(curl -fsS "https://$LEKS_HOST/health"); then echo "health: $body"; exit 0; fi
+            sleep 5
+          done
+          ssh "root@$SERVER_IP" "cd /opt/leks && docker compose logs --tail 80"
+          exit 1
+
+      - name: Publish the deploy log to the deploy-logs branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          mkdir report && cd report
+          { echo "# Deploy of $TAG: ${{ job.status }}"; echo; echo '```'; tail -n 300 /tmp/deploy.log 2>/dev/null | sed -E 's/gh[ps]_[A-Za-z0-9]+/***/g'; echo '```'; } > README.md
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -qm "Deploy log for $TAG"
+          git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:deploy-logs
