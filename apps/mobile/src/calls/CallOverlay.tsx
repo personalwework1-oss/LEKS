@@ -48,14 +48,18 @@ export function CallOverlay() {
   const state = useCallState();
   const [toast, setToast] = useState<EndReason | null>(null);
 
-  // Briefly say how a call ended.
+  // Briefly say how a call ended, then go back to the app.
   useEffect(() => {
     if (state?.phase !== "idle" || !state.ended) return;
     setToast(state.ended);
     calls?.dismiss();
-    const timer = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(timer);
   }, [state?.phase, state?.ended]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // Vibrate while an incoming call rings.
   useEffect(() => {
@@ -69,18 +73,18 @@ export function CallOverlay() {
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={() => undefined} statusBarTranslucent>
-      {state.phase === "idle" ? <Ended reason={toast} /> : <CallScreen state={state} />}
+      {state.phase === "idle" ? <Ended reason={toast} onClose={() => setToast(null)} /> : <CallScreen state={state} />}
     </Modal>
   );
 }
 
-function Ended({ reason }: { reason: EndReason | null }) {
+function Ended({ reason, onClose }: { reason: EndReason | null; onClose: () => void }) {
   return (
-    <View style={{ flex: 1, backgroundColor: "#0E1117", alignItems: "center", justifyContent: "center" }}>
+    <Pressable accessibilityRole="button" accessibilityHint="Вернуться в приложение" onPress={onClose} style={{ flex: 1, backgroundColor: "#0E1117", alignItems: "center", justifyContent: "center" }}>
       <AppText variant="heading" color="#FFFFFF">
         {reason ? ENDED_TEXT[reason] : ""}
       </AppText>
-    </View>
+    </Pressable>
   );
 }
 
@@ -220,6 +224,22 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
   const [now, setNow] = useState(Date.now());
   const [others, setOthers] = useState(room.remoteParticipants.size);
   const [joinedAt, setJoinedAt] = useState<number | null>(null);
+  // Video calls start on the speaker; so do phones without an earpiece.
+  const [speaker, setSpeaker] = useState(state.video);
+
+  useEffect(() => {
+    void (async () => {
+      const outputs = await AudioSession.getAudioOutputs();
+      const useSpeaker = state.video || (Platform.OS === "android" && !outputs.includes("earpiece"));
+      await route(useSpeaker);
+      setSpeaker(useSpeaker);
+    })().catch((e: unknown) => console.warn("audio route", e));
+  }, []);
+
+  async function route(on: boolean) {
+    if (Platform.OS === "ios") await AudioSession.selectAudioOutput(on ? "force_speaker" : "default");
+    else await AudioSession.selectAudioOutput(on ? "speaker" : "earpiece");
+  }
 
   // Media is encrypted on the phone. LiveKit reports when that is actually on.
   useEffect(() => {
@@ -312,14 +332,14 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
       <View style={{ flexDirection: "row", justifyContent: "space-evenly", alignItems: "center" }}>
         <RoundButton
           icon={isMicrophoneEnabled ? "mic" : "micOff"}
-          label={isMicrophoneEnabled ? "Выключить микрофон" : "Включить микрофон"}
+          label={isMicrophoneEnabled ? "Микрофон" : "Без звука"}
           color={isMicrophoneEnabled ? "rgba(255,255,255,0.16)" : "#FFFFFF"}
           iconColor={isMicrophoneEnabled ? "#FFFFFF" : "#0E1117"}
           onPress={() => void localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled).catch((e: unknown) => console.warn("mic", e))}
         />
         <RoundButton
           icon={isCameraEnabled ? "video" : "videoOff"}
-          label={isCameraEnabled ? "Выключить камеру" : "Включить камеру"}
+          label={isCameraEnabled ? "Видео" : "Видео выкл."}
           color={isCameraEnabled ? "rgba(255,255,255,0.16)" : "#FFFFFF"}
           iconColor={isCameraEnabled ? "#FFFFFF" : "#0E1117"}
           onPress={() =>
@@ -329,8 +349,19 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
             })().catch((e: unknown) => console.warn("camera", e))
           }
         />
-        {isCameraEnabled ? <RoundButton icon="flip" label="Сменить камеру" color="rgba(255,255,255,0.16)" onPress={() => void flipCamera()} /> : null}
-        <RoundButton icon="callEnd" label="Завершить" color="#E5484D" onPress={() => void calls?.hangUp()} />
+        <RoundButton
+          icon="speaker"
+          label={speaker ? "Динамик вкл." : "Динамик"}
+          color={speaker ? "#FFFFFF" : "rgba(255,255,255,0.16)"}
+          iconColor={speaker ? "#0E1117" : "#FFFFFF"}
+          onPress={() =>
+            void route(!speaker)
+              .then(() => setSpeaker(!speaker))
+              .catch((e: unknown) => console.warn("speaker", e))
+          }
+        />
+        {isCameraEnabled ? <RoundButton icon="flip" label="Камера" color="rgba(255,255,255,0.16)" onPress={() => void flipCamera()} /> : null}
+        <RoundButton icon="callEnd" label="Конец" color="#E5484D" onPress={() => void calls?.hangUp()} />
       </View>
     </View>
   );
@@ -343,7 +374,7 @@ function RoundButton({ icon, label, color, iconColor = "#FFFFFF", onPress }: { i
         accessibilityRole="button"
         accessibilityLabel={label}
         onPress={onPress}
-        style={({ pressed }) => ({ width: 66, height: 66, borderRadius: 33, backgroundColor: color, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.75 : 1 })}
+        style={({ pressed }) => ({ width: 60, height: 60, borderRadius: 30, backgroundColor: color, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.75 : 1 })}
       >
         <Icon name={icon} size={28} color={iconColor} strokeWidth={2} />
       </Pressable>

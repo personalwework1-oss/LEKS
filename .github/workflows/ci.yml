@@ -149,7 +149,7 @@ jobs:
       - name: Add the Firebase file for push (if the secret is set)
         working-directory: apps/mobile
         env:
-          GOOGLE_SERVICES_JSON: ${{ github.event_name == 'push' && secrets.GOOGLE_SERVICES_JSON || '' }}
+          GOOGLE_SERVICES_JSON: ${{ github.event_name != 'pull_request' && secrets.GOOGLE_SERVICES_JSON || '' }}
         run: |
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json; echo "push: on"; else echo "push: off (no GOOGLE_SERVICES_JSON secret)"; fi
       - name: Generate the native Android project
