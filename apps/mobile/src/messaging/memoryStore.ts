@@ -1,4 +1,4 @@
-import type { Conversation, Message, MessageStatus, MessageStore, OutboxItem } from "./types";
+import { type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 /** An in-memory store with the same behaviour as the SQLite one; used by tests. */
 export class MemoryStore implements MessageStore {
@@ -22,16 +22,30 @@ export class MemoryStore implements MessageStore {
     return [...this.msgs.values()]
       .filter((m) => m.conversationId === conversationId)
       .sort((a, b) => a.sentAt - b.sentAt)
-      .slice(-limit);
+      .slice(-limit)
+      .map((m) => ({ ...m, reactions: { ...m.reactions } }));
+  }
+  async message(id: string) {
+    const message = this.msgs.get(id);
+    return message ? { ...message, reactions: { ...message.reactions } } : null;
   }
   async addMessage(message: Message) {
     if (this.msgs.has(message.id)) return false;
-    this.msgs.set(message.id, { ...message });
+    this.msgs.set(message.id, { ...message, reactions: { ...message.reactions } });
     return true;
   }
   async setStatus(messageId: string, status: MessageStatus) {
     const message = this.msgs.get(messageId);
-    if (message) message.status = status;
+    if (message && (STATUS_RANK[status] > STATUS_RANK[message.status] || status === "failed")) message.status = status;
+  }
+  async updateMessage(message: Message) {
+    if (this.msgs.has(message.id)) this.msgs.set(message.id, { ...message, reactions: { ...message.reactions } });
+  }
+  async removeMessage(id: string) {
+    this.msgs.delete(id);
+  }
+  async unreadIncoming(conversationId: string) {
+    return (await this.messages(conversationId, Number.MAX_SAFE_INTEGER)).filter((m) => !m.outgoing && m.status === "received");
   }
   async markRead(conversationId: string) {
     const chat = this.chats.get(conversationId);

@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import type { Conversation, Message, MessageStatus, MessageStore, OutboxItem } from "./types";
+import { type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS messages (
   outgoing INTEGER NOT NULL,
   text TEXT NOT NULL,
   sent_at INTEGER NOT NULL,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  reply_to TEXT,
+  edited_at INTEGER,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  reactions TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation_id, sent_at);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -32,6 +36,14 @@ CREATE TABLE IF NOT EXISTS outbox (
   message_id TEXT
 );
 `;
+
+/** Columns added after the first test builds; applied once to older databases. */
+const UPGRADES: string[] = [
+  `ALTER TABLE messages ADD COLUMN reply_to TEXT;
+   ALTER TABLE messages ADD COLUMN edited_at INTEGER;
+   ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}';`,
+];
 
 interface ConversationRow {
   id: string;
@@ -51,6 +63,10 @@ interface MessageRow {
   text: string;
   sent_at: number;
   status: MessageStatus;
+  reply_to: string | null;
+  edited_at: number | null;
+  deleted: number;
+  reactions: string;
 }
 
 interface OutboxRow {
@@ -80,7 +96,24 @@ const toMessage = (r: MessageRow): Message => ({
   text: r.text,
   sentAt: r.sent_at,
   status: r.status,
+  replyTo: r.reply_to,
+  editedAt: r.edited_at,
+  deleted: r.deleted === 1,
+  reactions: parseReactions(r.reactions),
 });
+
+function parseReactions(json: string): Record<string, string> {
+  try {
+    const value = JSON.parse(json) as unknown;
+    return value && typeof value === "object" ? (value as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+const RANK_SQL = `CASE status ${Object.entries(STATUS_RANK)
+  .map(([status, rank]) => `WHEN '${status}' THEN ${rank}`)
+  .join(" ")} ELSE 0 END`;
 
 /**
  * Chats on the phone, in the app's private SQLite database (one file per
@@ -91,7 +124,13 @@ export class SqliteStore implements MessageStore {
 
   static async open(name: string): Promise<SqliteStore> {
     const db = await SQLite.openDatabaseAsync(name);
+    const version = (await db.getFirstAsync<{ user_version: number }>("PRAGMA user_version"))?.user_version ?? 0;
+    const fresh = !(await db.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'messages'"));
     await db.execAsync(SCHEMA);
+    if (!fresh) {
+      for (let i = version; i < UPGRADES.length; i++) await db.execAsync(UPGRADES[i]!);
+    }
+    await db.execAsync(`PRAGMA user_version = ${UPGRADES.length}`);
     return new SqliteStore(db);
   }
 
@@ -131,17 +170,51 @@ export class SqliteStore implements MessageStore {
     return rows.map(toMessage);
   }
 
+  async message(id: string) {
+    const row = await this.db.getFirstAsync<MessageRow>("SELECT * FROM messages WHERE id = ?", [id]);
+    return row ? toMessage(row) : null;
+  }
+
   async addMessage(m: Message) {
     const result = await this.db.runAsync(
-      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [m.id, m.conversationId, m.senderAccountId, m.outgoing ? 1 : 0, m.text, m.sentAt, m.status],
+      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [m.id, m.conversationId, m.senderAccountId, m.outgoing ? 1 : 0, m.text, m.sentAt, m.status, m.replyTo, m.editedAt, m.deleted ? 1 : 0, JSON.stringify(m.reactions)],
     );
     return result.changes > 0;
   }
 
   async setStatus(messageId: string, status: MessageStatus) {
-    await this.db.runAsync("UPDATE messages SET status = ? WHERE id = ?", [status, messageId]);
+    await this.db.runAsync(`UPDATE messages SET status = ? WHERE id = ? AND (? = 'failed' OR ${RANK_SQL} < ?)`, [
+      status,
+      messageId,
+      status,
+      STATUS_RANK[status],
+    ]);
+  }
+
+  async updateMessage(m: Message) {
+    await this.db.runAsync("UPDATE messages SET text = ?, status = ?, reply_to = ?, edited_at = ?, deleted = ?, reactions = ? WHERE id = ?", [
+      m.text,
+      m.status,
+      m.replyTo,
+      m.editedAt,
+      m.deleted ? 1 : 0,
+      JSON.stringify(m.reactions),
+      m.id,
+    ]);
+  }
+
+  async removeMessage(id: string) {
+    await this.db.runAsync("DELETE FROM messages WHERE id = ?", [id]);
+  }
+
+  async unreadIncoming(conversationId: string) {
+    const rows = await this.db.getAllAsync<MessageRow>(
+      "SELECT * FROM messages WHERE conversation_id = ? AND outgoing = 0 AND status = 'received' ORDER BY sent_at ASC",
+      [conversationId],
+    );
+    return rows.map(toMessage);
   }
 
   async markRead(conversationId: string) {

@@ -162,6 +162,21 @@ const icons = {
       <Path d="M12 18v3" />
     </>
   ),
+  reply: (
+    <>
+      <Path d="M9 14L4 9l5-5" />
+      <Path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </>
+  ),
+  edit: <Path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />,
+  trash: (
+    <>
+      <Path d="M4 7h16" />
+      <Path d="M10 11v6M14 11v6" />
+      <Path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
+      <Path d="M9 7V4h6v3" />
+    </>
+  ),
   close: (
     <>
       <Path d="M6 6l12 12" />

@@ -38,3 +38,8 @@ export function useConversation(id: string) {
 export function useMessages(conversationId: string) {
   return useLive<Message[]>((m) => m.messages(conversationId), [], `messages:${conversationId}`);
 }
+
+/** True while the other person is typing in this chat. */
+export function useTyping(conversationId: string) {
+  return useLive<boolean>(async (m) => m.isTyping(conversationId), false, `typing:${conversationId}`).data;
+}

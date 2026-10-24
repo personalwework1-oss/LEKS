@@ -2,7 +2,7 @@ import type { DeliveredMessage, PublicUser } from "@leks/protocol";
 import { toBase64url } from "@leks/protocol";
 import { type Engine, type Received, utf8Decode, utf8Encode } from "../src/crypto/engine";
 import { MemoryStore } from "../src/messaging/memoryStore";
-import { identityOf, type Me, Messenger, MessengerError, parseIdentity, type Transport } from "../src/messaging/messenger";
+import { decodePayload, identityOf, type Me, Messenger, MessengerError, parseIdentity, type Transport } from "../src/messaging/messenger";
 
 /**
  * A stand-in for the Rust core: keeps the same shape of results so the
@@ -129,10 +129,14 @@ class Phone {
 
   /** Hands over what the server holds for this phone, as a `deliver` frame would. */
   async deliver() {
+    await settle();
     const batch = this.inbox.splice(0);
     if (batch.length) await this.messenger.onMessages(batch);
   }
 }
+
+/** Lets every pending send and receipt finish (everything here is in memory). */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const alice: Me = { accountId: "acc-alice", deviceId: "dev-alice", displayName: "Алиса", username: "alice" };
 const bob: Me = { accountId: "acc-bob", deviceId: "dev-bob", displayName: "Боб", username: "bob" };
@@ -177,7 +181,8 @@ describe("Messenger", () => {
       ["Привет, Боб!", true],
       ["Привет, Алиса", false],
     ]);
-    expect(aliceView[0]!.status).toBe("sent");
+    // Bob's phone confirmed it arrived.
+    expect(aliceView[0]!.status).toBe("delivered");
 
     await b.messenger.markRead(chatId);
     expect((await b.messenger.conversation(chatId))?.unread).toBe(0);
@@ -221,6 +226,8 @@ describe("Messenger", () => {
     await a.messenger.flush();
     await b.deliver();
     await a.messenger.send(chatId, "один раз");
+    await settle();
+    expect(b.inbox).toHaveLength(1);
     const copy = [...b.inbox];
     await b.deliver();
     // The fake engine allows replays; the store must still keep one copy.
@@ -242,6 +249,171 @@ describe("Messenger", () => {
     await a.messenger.wipe();
     expect(await a.messenger.conversations()).toEqual([]);
     expect(a.engine.groups.size).toBe(0);
+  });
+});
+
+/** Alice and Bob with a chat between them, everything delivered. */
+async function chatting() {
+  const phones = await twoPhones();
+  const chatId = await phones.a.messenger.startChat(asUser(bob));
+  await phones.a.messenger.flush();
+  await phones.b.deliver();
+  return { ...phones, chatId };
+}
+
+describe("message features", () => {
+  it("shows sent → delivered → read on the sender's side", async () => {
+    const { a, b, chatId } = await chatting();
+    const sent = await a.messenger.send(chatId, "Ты тут?");
+    await settle();
+    expect((await a.messenger.messages(chatId))[0]!.status).toBe("sent");
+
+    await b.deliver();
+    await a.deliver();
+    expect((await a.messenger.messages(chatId))[0]!.status).toBe("delivered");
+
+    await b.messenger.markRead(chatId);
+    expect((await b.messenger.messages(chatId))[0]!.status).toBe("read");
+    await a.deliver();
+    expect((await a.messenger.messages(chatId))[0]).toMatchObject({ id: sent.id, status: "read" });
+
+    // Reading again sends nothing new.
+    await settle();
+    const before = b.server.sends.length;
+    await b.messenger.markRead(chatId);
+    expect(b.server.sends.length).toBe(before);
+  });
+
+  it("answers a message with a quote", async () => {
+    const { a, b, chatId } = await chatting();
+    const question = await a.messenger.send(chatId, "Встречаемся в 7?");
+    await b.deliver();
+    await b.messenger.send(chatId, "Да", question.id);
+    await a.deliver();
+    const answer = (await a.messenger.messages(chatId)).find((m) => m.text === "Да");
+    expect(answer?.replyTo).toBe(question.id);
+  });
+
+  it("edits and deletes my own messages on both phones", async () => {
+    const { a, b, chatId } = await chatting();
+    const first = await a.messenger.send(chatId, "Привет, Боп");
+    const second = await a.messenger.send(chatId, "лишнее");
+    await b.deliver();
+
+    await a.messenger.edit(first.id, "Привет, Боб");
+    await a.messenger.deleteForEveryone(second.id);
+    await b.deliver();
+
+    const view = await b.messenger.messages(chatId);
+    expect(view.map((m) => [m.text, m.editedAt !== null, m.deleted])).toEqual([
+      ["Привет, Боб", true, false],
+      ["", false, true],
+    ]);
+    // The list preview follows the newest message, and the deleted one no longer counts as unread.
+    expect(await b.messenger.conversation(chatId)).toMatchObject({ lastText: "Сообщение удалено", unread: 1 });
+  });
+
+  it("does not let anyone edit or delete someone else's message", async () => {
+    const { a, b, chatId } = await chatting();
+    const mine = await a.messenger.send(chatId, "моё");
+    await b.deliver();
+    await expect(b.messenger.edit(mine.id, "чужое")).rejects.toEqual(new MessengerError("not_allowed"));
+    await expect(b.messenger.deleteForEveryone(mine.id)).rejects.toEqual(new MessengerError("not_allowed"));
+  });
+
+  it("deletes for me only on this phone", async () => {
+    const { a, b, chatId } = await chatting();
+    const message = await a.messenger.send(chatId, "секрет");
+    await b.deliver();
+    await b.messenger.deleteForMe(message.id);
+    expect(await b.messenger.messages(chatId)).toEqual([]);
+    expect(await b.messenger.conversation(chatId)).toMatchObject({ unread: 0, lastText: null });
+    expect(await a.messenger.messages(chatId)).toHaveLength(1);
+  });
+
+  it("sets, changes and removes reactions", async () => {
+    const { a, b, chatId } = await chatting();
+    const message = await a.messenger.send(chatId, "Сдал экзамен!");
+    await b.deliver();
+
+    await b.messenger.react(message.id, "👍");
+    await a.deliver();
+    expect((await a.messenger.messages(chatId))[0]!.reactions).toEqual({ "acc-bob": "👍" });
+
+    await b.messenger.react(message.id, "❤️");
+    await a.messenger.react(message.id, "😂");
+    await a.deliver();
+    await b.deliver();
+    const expected = { "acc-bob": "❤️", "acc-alice": "😂" };
+    expect((await a.messenger.messages(chatId))[0]!.reactions).toEqual(expected);
+    expect((await b.messenger.messages(chatId))[0]!.reactions).toEqual(expected);
+
+    // The same emoji again takes it back.
+    await b.messenger.react(message.id, "❤️");
+    await a.deliver();
+    expect((await a.messenger.messages(chatId))[0]!.reactions).toEqual({ "acc-alice": "😂" });
+
+    await expect(b.messenger.react(message.id, "💩")).rejects.toEqual(new MessengerError("not_allowed"));
+  });
+
+  it("shows typing… until the message arrives, and never queues it", async () => {
+    const { a, b, chatId } = await chatting();
+    await b.deliver();
+    await a.deliver();
+    await a.messenger.typing(chatId);
+    await a.messenger.typing(chatId); // throttled
+    expect(b.inbox).toHaveLength(1);
+    expect(await a.store.outbox()).toEqual([]);
+
+    await b.deliver();
+    expect(b.messenger.isTyping(chatId)).toBe(true);
+    await a.messenger.send(chatId, "готово");
+    await b.deliver();
+    expect(b.messenger.isTyping(chatId)).toBe(false);
+    await b.messenger.wipe();
+  });
+
+  it("does not send typing while messages are still waiting to go out", async () => {
+    const { a, b, chatId } = await chatting();
+    a.online = false;
+    await a.messenger.send(chatId, "в очереди");
+    await settle();
+    a.online = true;
+    // The send is queued but not flushed yet in this tick.
+    const inboxBefore = b.inbox.length;
+    await a.messenger.typing(chatId);
+    await a.messenger.flush();
+    expect(b.inbox.slice(inboxBefore)).toHaveLength(1);
+  });
+
+  it("rejects malformed payloads", () => {
+    expect(decodePayload(utf8Encode(JSON.stringify({ v: 1, type: "reaction", id: "m", emoji: "<script>" })))).toBeNull();
+    expect(decodePayload(utf8Encode(JSON.stringify({ v: 1, type: "reaction", id: "m", emoji: "👍" })))).not.toBeNull();
+    expect(decodePayload(utf8Encode(JSON.stringify({ v: 1, type: "receipt", state: "read", ids: [1] })))).toBeNull();
+    expect(decodePayload(utf8Encode(JSON.stringify({ v: 2, type: "text", id: "x", text: "y", sentAt: 1 })))).toBeNull();
+  });
+
+  it("ignores someone else who got into the chat's group", async () => {
+    const { a, b, chatId } = await chatting();
+    const message = await a.messenger.send(chatId, "раз");
+    await b.deliver();
+    const carol = new Phone(a.server, { accountId: "acc-carol", deviceId: "dev-carol", displayName: "Кэрол", username: "carol" });
+    carol.engine.groups.set(chatId, [identityOf(alice), identityOf(bob), identityOf(carol.me)]);
+    for (const payload of [
+      { v: 1, type: "text", id: "c1", text: "я тоже тут", sentAt: 1 },
+      { v: 1, type: "reaction", id: message.id, emoji: "😢" },
+      { v: 1, type: "edit", id: message.id, text: "взлом", editedAt: 2 },
+    ]) {
+      b.inbox.push({
+        id: a.server.nextId++,
+        from: { accountId: "acc-carol", deviceId: "dev-carol" },
+        kind: "message",
+        payload: await carol.engine.encrypt(chatId, utf8Encode(JSON.stringify(payload))),
+        sentAt: 1,
+      });
+    }
+    await b.deliver();
+    expect((await b.messenger.messages(chatId)).map((m) => [m.text, m.reactions])).toEqual([["раз", {}]]);
   });
 });
 
