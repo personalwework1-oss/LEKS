@@ -175,7 +175,7 @@ function Connected({ state, name }: { state: CallState; name: string }) {
       video={state.video}
       options={{ adaptiveStream: { pixelDensity: "screen" }, e2ee: { e2eeManager } }}
       onError={(error) => setProblem(error.message)}
-      onDisconnected={(reason) => reason !== undefined && setProblem(`Соединение прервалось (${String(reason)})`)}
+      onDisconnected={() => setProblem((current) => current ?? "Соединение прервалось")}
     >
       <RoomView state={state} name={name} problem={problem} />
     </LiveKitRoom>
