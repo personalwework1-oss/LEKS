@@ -64,6 +64,11 @@ export class FcmNotifier implements PushNotifier {
     return answer.access_token;
   }
 
+  /** Signs in to Firebase once, so a broken key shows up at startup rather than on the first message. */
+  async check(): Promise<void> {
+    await this.token();
+  }
+
   async notify(deviceId: string): Promise<void> {
     const last = this.lastSent.get(deviceId) ?? 0;
     if (this.now() - last < PUSH_INTERVAL_MS) return;

@@ -26,6 +26,8 @@ export interface AppOptions {
 }
 
 export interface App extends FastifyInstance {
+  /** Whether Android push works: off (no key), checking, on, or key_rejected. */
+  pushStatus: string;
   hub: Hub;
   store: Store;
   blobs: BlobStorage;
@@ -65,6 +67,7 @@ export async function buildApp({
   const hub = new Hub(store, typeof push === "function" ? push(store) : push, app.log);
   app.decorate("store", store);
   app.decorate("hub", hub);
+  app.decorate("pushStatus", "off");
   const blobs = new BlobStorage(blobDir);
   app.decorate("blobs", blobs);
 
@@ -73,7 +76,7 @@ export async function buildApp({
   app.get("/health", async (_request, reply) => {
     try {
       await pool.query("SELECT 1");
-      return { status: "ok", database: "ok", protocol: PROTOCOL_VERSION };
+      return { status: "ok", database: "ok", protocol: PROTOCOL_VERSION, push: (app as unknown as App).pushStatus, calls: calls ? "on" : "off" };
     } catch {
       return reply.code(503).send({ status: "degraded", database: "unavailable", protocol: PROTOCOL_VERSION });
     }

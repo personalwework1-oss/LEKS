@@ -78,7 +78,7 @@ describe.skipIf(!databaseUrl)("server basics", () => {
   it("GET /health reports ok", async () => {
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "ok", database: "ok", protocol: PROTOCOL_VERSION });
+    expect(response.json()).toEqual({ status: "ok", database: "ok", protocol: PROTOCOL_VERSION, push: "off", calls: "off" });
   });
 
   it("WebSocket: hello returns a fresh 32-byte challenge each time", async () => {
