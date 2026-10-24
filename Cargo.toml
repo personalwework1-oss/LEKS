@@ -7,3 +7,10 @@ edition = "2021"
 rust-version = "1.91"
 license = "UNLICENSED"
 publish = false
+
+# Small, fast libraries for the phones.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true

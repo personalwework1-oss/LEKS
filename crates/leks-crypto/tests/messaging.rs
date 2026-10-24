@@ -169,3 +169,30 @@ fn invalid_inputs_are_rejected() {
     let bob = Client::new(b"bob").unwrap();
     assert!(alice.join(&bob.key_package().unwrap()).is_err());
 }
+
+#[test]
+fn state_survives_export_and_import() {
+    let (mut alice, bob, group_id) = alice_and_bob();
+    let saved = bob.export_state();
+    drop(bob);
+    let mut bob = Client::import_state(&saved).unwrap();
+    assert_eq!(bob.identity(), b"bob");
+    assert_eq!(bob.group_ids(), vec![group_id.clone()]);
+
+    let ciphertext = alice.encrypt(&group_id, b"after restart").unwrap();
+    assert!(matches!(
+        bob.receive(&ciphertext).unwrap(),
+        Incoming::Message { plaintext, .. } if plaintext == b"after restart"
+    ));
+    let reply = bob.encrypt(&group_id, b"still here").unwrap();
+    assert!(matches!(
+        alice.receive(&reply).unwrap(),
+        Incoming::Message { .. }
+    ));
+
+    // A corrupted state is refused instead of half-loaded.
+    let mut broken = bob.export_state();
+    broken.truncate(broken.len() - 3);
+    assert!(Client::import_state(&broken).is_err());
+    assert!(Client::import_state(b"garbage").is_err());
+}

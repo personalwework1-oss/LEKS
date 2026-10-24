@@ -6,10 +6,13 @@
 //! byte strings this crate produces: key packages, commits, welcomes and
 //! encrypted application messages.
 //!
-//! This first version keeps state in memory. Persistent storage on the device
-//! (SQLite) and the bindings for the mobile apps are added in the next stage.
+//! The whole state of a device (signing key, key packages, groups) can be
+//! saved with [`Client::export_state`] and restored with
+//! [`Client::import_state`]; the [`ffi`] module does this after every change
+//! and is how the iOS and Android apps call the core.
 
 mod device_key;
+pub mod ffi;
 
 pub use device_key::{verify as verify_ed25519, DeviceAuthKey, AUTH_CONTEXT, CHALLENGE_LEN};
 
@@ -260,6 +263,96 @@ impl Client {
         }
     }
 
+    /// Ids of the groups this client is in.
+    pub fn group_ids(&self) -> Vec<Vec<u8>> {
+        self.groups.keys().cloned().collect()
+    }
+
+    /// Saves everything needed to continue later: identity, signing key,
+    /// unused key packages and every group's keys. The bytes are secret and
+    /// must stay on the device.
+    pub fn export_state(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(STATE_MAGIC);
+        put(&mut out, self.identity());
+        put(&mut out, &self.signer.to_public_vec());
+        let group_ids = self.group_ids();
+        out.extend_from_slice(&(group_ids.len() as u32).to_be_bytes());
+        for id in &group_ids {
+            put(&mut out, id);
+        }
+        let values = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .expect("storage lock poisoned");
+        out.extend_from_slice(&(values.len() as u64).to_be_bytes());
+        let mut entries: Vec<_> = values.iter().collect();
+        entries.sort();
+        for (key, value) in entries {
+            put(&mut out, key);
+            put(&mut out, value);
+        }
+        out
+    }
+
+    /// Restores a client saved with [`Client::export_state`].
+    pub fn import_state(bytes: &[u8]) -> CryptoResult<Self> {
+        let bad = || CryptoError::InvalidInput("not a saved state".into());
+        let mut reader = Reader(bytes);
+        if reader.take(STATE_MAGIC.len()).ok_or_else(bad)? != STATE_MAGIC {
+            return Err(bad());
+        }
+        let identity = reader.chunk().ok_or_else(bad)?.to_vec();
+        let public_key = reader.chunk().ok_or_else(bad)?.to_vec();
+        let group_count = reader.u32().ok_or_else(bad)?;
+        let mut group_ids = Vec::new();
+        for _ in 0..group_count {
+            group_ids.push(reader.chunk().ok_or_else(bad)?.to_vec());
+        }
+        let entries = reader.u64().ok_or_else(bad)?;
+        let provider = OpenMlsRustCrypto::default();
+        {
+            let mut values = provider
+                .storage()
+                .values
+                .write()
+                .expect("storage lock poisoned");
+            for _ in 0..entries {
+                let key = reader.chunk().ok_or_else(bad)?.to_vec();
+                let value = reader.chunk().ok_or_else(bad)?.to_vec();
+                values.insert(key, value);
+            }
+        }
+        if !reader.0.is_empty() {
+            return Err(bad());
+        }
+        let signer = SignatureKeyPair::read(
+            provider.storage(),
+            &public_key,
+            CIPHERSUITE.signature_algorithm(),
+        )
+        .ok_or_else(|| CryptoError::InvalidInput("signing key missing from state".into()))?;
+        let mut groups = HashMap::new();
+        for id in group_ids {
+            let group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&id))
+                .map_err(mls)?
+                .ok_or_else(|| CryptoError::InvalidInput("group missing from state".into()))?;
+            groups.insert(id, group);
+        }
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity).into(),
+            signature_key: public_key.into(),
+        };
+        Ok(Self {
+            provider,
+            signer,
+            credential,
+            groups,
+        })
+    }
+
     /// Number of members in the group.
     pub fn member_count(&self, group_id: &[u8]) -> CryptoResult<usize> {
         self.groups
@@ -279,6 +372,36 @@ impl Client {
                     .collect()
             })
             .ok_or(CryptoError::UnknownGroup)
+    }
+}
+
+const STATE_MAGIC: &[u8] = b"LEKSST01";
+
+fn put(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+struct Reader<'a>(&'a [u8]);
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        if self.0.len() < n {
+            return None;
+        }
+        let (head, tail) = self.0.split_at(n);
+        self.0 = tail;
+        Some(head)
+    }
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn chunk(&mut self) -> Option<&'a [u8]> {
+        let n = self.u32()? as usize;
+        self.take(n)
     }
 }
 
