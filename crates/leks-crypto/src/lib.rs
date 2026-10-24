@@ -13,6 +13,7 @@
 
 mod device_key;
 pub mod ffi;
+pub mod file_crypto;
 
 pub use device_key::{verify as verify_ed25519, DeviceAuthKey, AUTH_CONTEXT, CHALLENGE_LEN};
 

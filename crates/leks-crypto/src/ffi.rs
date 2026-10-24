@@ -21,7 +21,16 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::file_crypto::{self, FileError};
 use crate::{Client, CryptoError, Incoming};
+
+fn file_failure(error: FileError) -> Failure {
+    match error {
+        FileError::Io(e) => fail("storage", e.to_string()),
+        FileError::Rejected => fail("rejected", "the file could not be decrypted"),
+        FileError::BadKey => fail("invalid_input", "bad file key"),
+    }
+}
 
 /// Most key packages created in one call.
 const MAX_KEY_PACKAGES_PER_CALL: usize = 100;
@@ -68,6 +77,16 @@ enum Request {
     #[serde(rename_all = "camelCase")]
     Members {
         group_id: String,
+    },
+    /// Encrypts a photo or file with a new key (see `file_crypto`).
+    EncryptFile {
+        input: String,
+        output: String,
+    },
+    DecryptFile {
+        input: String,
+        output: String,
+        key: String,
     },
 }
 
@@ -124,6 +143,23 @@ pub fn call(request: &[u8]) -> Vec<u8> {
 fn handle(request: &[u8]) -> Result<Value, Failure> {
     let request: Request =
         serde_json::from_slice(request).map_err(|e| fail("invalid_request", e.to_string()))?;
+
+    // Files need no keys from the state, so they do not hold the lock (a big
+    // video must not stop messages from being decrypted meanwhile).
+    match request {
+        Request::EncryptFile { input, output } => {
+            let encrypted = file_crypto::encrypt_file(Path::new(&input), Path::new(&output))
+                .map_err(file_failure)?;
+            return Ok(json!({ "key": b64(&encrypted.key), "size": encrypted.size }));
+        }
+        Request::DecryptFile { input, output, key } => {
+            file_crypto::decrypt_file(Path::new(&input), Path::new(&output), &unb64(&key)?)
+                .map_err(file_failure)?;
+            return Ok(json!({}));
+        }
+        _ => {}
+    }
+
     let mut guard = STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -237,7 +273,10 @@ fn handle_open(client: &mut Client, request: Request) -> Result<(Value, bool), F
                 .collect();
             (json!({ "members": members }), false)
         }
-        Request::Open { .. } | Request::Reset { .. } => unreachable!("handled before"),
+        Request::Open { .. }
+        | Request::Reset { .. }
+        | Request::EncryptFile { .. }
+        | Request::DecryptFile { .. } => unreachable!("handled before"),
     })
 }
 
