@@ -2,6 +2,7 @@ import { router } from "expo-router";
 import { useState } from "react";
 import { FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { BackupReminder } from "@/components/BackupReminder";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, IconButton } from "@/components/ui";
@@ -43,6 +44,7 @@ export default function Chats() {
         <IconButton icon="compose" label="Новый чат" tone="accent" onPress={() => router.push("/contacts")} />
       </View>
       <ConnectionBanner />
+      <BackupReminder />
 
       <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
         <View style={{ height: 44, borderRadius: 14, backgroundColor: p.surfaceMuted, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14 }}>

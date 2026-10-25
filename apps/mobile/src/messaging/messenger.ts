@@ -159,6 +159,36 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
 }
 
 /** A chat that is not (yet) known to be a group. */
+/** The message that carries a sent file's link and key. */
+function filePayload(message: Message): Payload {
+  const sent = message.attachment!;
+  return {
+    v: 1,
+    type: "file",
+    id: message.id,
+    sentAt: message.sentAt,
+    ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+    caption: message.text,
+    blobId: sent.blobId!,
+    key: sent.key!,
+    kind: sent.kind,
+    name: sent.name,
+    mime: sent.mime,
+    size: sent.size,
+    ...(sent.width ? { width: sent.width } : {}),
+    ...(sent.height ? { height: sent.height } : {}),
+    ...(sent.thumb ? { thumb: sent.thumb } : {}),
+    ...(sent.duration ? { duration: sent.duration } : {}),
+    ...(sent.waveform ? { waveform: sent.waveform.map((n) => Math.round(n * 100) / 100) } : {}),
+  };
+}
+
+/** What goes out for a message of mine, rebuilt from what is stored (held while a restored phone rejoins). */
+function payloadOf(message: Message): Payload | null {
+  if (message.attachment) return message.attachment.state === "sent" && message.attachment.blobId && message.attachment.key ? filePayload(message) : null;
+  return { v: 1, type: "text", id: message.id, text: message.text, sentAt: message.sentAt, ...(message.replyTo ? { replyTo: message.replyTo } : {}) };
+}
+
 function directChat(id: string, peerAccountId: string, at: number): Conversation {
   return {
     id,
@@ -396,6 +426,7 @@ export class Messenger {
       } else if (existing.rejoining || existing.left) {
         // This phone (restored from a backup) is back in the chat.
         await this.store.saveConversation({ ...existing, rejoining: false, left: false });
+        if (existing.rejoining) await this.releaseHeld(groupId);
       }
       return null;
     }
@@ -685,7 +716,7 @@ export class Messenger {
   async send(conversationId: string, text: string, replyTo: string | null = null): Promise<Message> {
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
-    if (conversation.left || conversation.rejoining) throw new MessengerError("not_allowed");
+    if (conversation.left) throw new MessengerError("not_allowed");
     const body = text.slice(0, MAX_TEXT);
 
     const message: Message = {
@@ -707,6 +738,12 @@ export class Messenger {
     await this.store.addMessage(message);
     await this.store.saveConversation({ ...conversation, lastText: body, lastAt: message.sentAt });
     this.typingSentAt.delete(conversationId);
+    if (conversation.rejoining) {
+      // Restored phone not back in the chat yet: kept as "sending" and sent the moment it is.
+      this.changed();
+      this.askToRejoin();
+      return message;
+    }
     await this.sendPayload(conversationId, payload, message.id, message.id);
     void this.syncDevices(conversationId);
     return message;
@@ -721,7 +758,7 @@ export class Messenger {
     if (file.size > MAX_BLOB_BYTES - 1024 * 1024) throw new MessengerError("too_large");
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
-    if (conversation.left || conversation.rejoining) throw new MessengerError("not_allowed");
+    if (conversation.left) throw new MessengerError("not_allowed");
 
     const id = this.uuid();
     const localUri = this.files.mediaUri(id, file.name);
@@ -798,25 +835,11 @@ export class Messenger {
       if (!latest?.attachment || latest.deleted) return;
       const sent: Attachment = { ...latest.attachment, blobId: ticket.blobId, key, state: "sent" };
       await this.store.updateMessage({ ...latest, attachment: sent });
-      const payload: Payload = {
-        v: 1,
-        type: "file",
-        id: latest.id,
-        sentAt: latest.sentAt,
-        ...(latest.replyTo ? { replyTo: latest.replyTo } : {}),
-        caption: latest.text,
-        blobId: ticket.blobId,
-        key,
-        kind: sent.kind,
-        name: sent.name,
-        mime: sent.mime,
-        size: sent.size,
-        ...(sent.width ? { width: sent.width } : {}),
-        ...(sent.height ? { height: sent.height } : {}),
-        ...(sent.thumb ? { thumb: sent.thumb } : {}),
-        ...(sent.duration ? { duration: sent.duration } : {}),
-        ...(sent.waveform ? { waveform: sent.waveform.map((n) => Math.round(n * 100) / 100) } : {}),
-      };
+      const payload = filePayload({ ...latest, attachment: sent });
+      if ((await this.store.conversation(latest.conversationId))?.rejoining) {
+        this.askToRejoin();
+        return;
+      }
       await this.sendPayload(latest.conversationId, payload, latest.id);
     } catch (error) {
       // Network trouble leaves it "uploading" for the next connection; anything else is a failure.
@@ -950,6 +973,8 @@ export class Messenger {
 
   /** Encrypts something for the chat and puts it in the outbox, then starts sending. */
   private async sendPayload(conversationId: string, payload: Payload, messageId: string | null, id?: string): Promise<void> {
+    // Not back in the chat yet (restored phone): receipts, reactions and the like are skipped.
+    if ((await this.store.conversation(conversationId))?.rejoining) return;
     const recipients = await this.recipients(conversationId);
     const ciphertext = await this.engine.encrypt(conversationId, utf8Encode(JSON.stringify(payload)));
     if (recipients.length === 0) {
@@ -1146,6 +1171,26 @@ export class Messenger {
     for (const chat of await this.store.conversations()) {
       if (!chat.left && !chat.rejoining && this.chatAccounts(chat).includes(accountId)) await this.syncDevices(chat.id, true);
     }
+  }
+
+  /** Messages written while this phone was waiting to be brought back into the chat go out now, in order. */
+  private async releaseHeld(conversationId: string): Promise<void> {
+    const held = (await this.store.messages(conversationId, Number.MAX_SAFE_INTEGER))
+      .filter((m) => m.outgoing && m.status === "sending" && !m.deleted && !m.event)
+      .sort((a, b) => a.sentAt - b.sentAt);
+    for (const message of held) {
+      const payload = payloadOf(message);
+      if (payload) await this.sendPayload(conversationId, payload, message.id, message.id);
+      else if (message.attachment?.state === "uploading") void this.upload(message.id);
+    }
+  }
+
+  private lastRejoinAsk = 0;
+  /** Writing in a chat this phone is not back in yet: reminds the others' phones (at most once a minute). */
+  private askToRejoin(): void {
+    if (this.now() - this.lastRejoinAsk < 60_000) return;
+    this.lastRejoinAsk = this.now();
+    void this.nudgeContacts().catch(() => undefined);
   }
 
   /** After a restore: asks the people in my chats to bring this phone in now (they also do it on their own later). */

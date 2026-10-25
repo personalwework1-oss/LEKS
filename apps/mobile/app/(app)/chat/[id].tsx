@@ -228,12 +228,13 @@ export default function Chat() {
         </View>
       ) : null}
       {chat?.rejoining && !chat.left ? (
-        <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
-          <AppText muted style={{ textAlign: "center" }}>
-            Переписка восстановлена. Писать можно, как только телефон собеседника подключит это устройство — обычно это занимает минуту, когда он в сети.
+        <View style={{ backgroundColor: p.surface, paddingHorizontal: 16, paddingVertical: 8, borderTopWidth: 1, borderTopColor: p.separator }}>
+          <AppText variant="caption" muted>
+            Переписка восстановлена. Новые сообщения уйдут, как только {isGroup ? "участники будут" : "собеседник будет"} в сети.
           </AppText>
         </View>
-      ) : chat?.left ? (
+      ) : null}
+      {chat?.left ? (
         <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
           <AppText muted style={{ textAlign: "center" }}>
             Вы больше не участник этой группы.

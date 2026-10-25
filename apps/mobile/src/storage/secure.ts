@@ -40,6 +40,8 @@ export const BackupSettings = z.object({
   key: z.string().optional(),
   auto: z.boolean().default(true),
   lastAt: z.number().int().default(0),
+  /** "Позже" on the reminder: hidden until then. */
+  remindAfter: z.number().int().default(0),
 });
 export type BackupSettings = z.infer<typeof BackupSettings>;
 
@@ -72,7 +74,7 @@ export const secure = {
   saveLock: (lock: LockSettings) => SecureStore.setItemAsync(KEYS.lock, JSON.stringify(lock), options),
 
   async loadBackup(): Promise<BackupSettings> {
-    return (await readJson(KEYS.backup, BackupSettings)) ?? { auto: true, lastAt: 0 };
+    return (await readJson(KEYS.backup, BackupSettings)) ?? { auto: true, lastAt: 0, remindAfter: 0 };
   },
   saveBackup: (settings: BackupSettings) => SecureStore.setItemAsync(KEYS.backup, JSON.stringify(settings), options),
 

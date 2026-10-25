@@ -913,7 +913,9 @@ describe("backup", () => {
     expect(restored?.chats).toBe(1);
     expect((await b2.store.messages(chatId)).map((m) => m.text)).toContain("привет");
     expect((await b2.store.conversation(chatId))?.rejoining).toBe(true);
-    await expect(b2.messenger.send(chatId, "рано")).rejects.toThrow("not_allowed");
+    // Writing works right away: the message waits until this phone is back in the chat.
+    const early = await b2.messenger.send(chatId, "рано");
+    expect(early.status).toBe("sending");
     await settle();
     expect(server.nudged).toContain("dev-alice");
 
@@ -924,7 +926,10 @@ describe("backup", () => {
     await b2.messenger.send(chatId, "я тут");
     await b2.messenger.flush();
     await a.deliver();
-    expect((await a.store.messages(chatId)).map((m) => m.text)).toContain("я тут");
+    const texts = (await a.store.messages(chatId)).map((m) => m.text);
+    expect(texts).toContain("рано");
+    expect(texts).toContain("я тут");
+    expect(texts.indexOf("рано")).toBeLessThan(texts.indexOf("я тут"));
   });
 
   it("refuses the wrong password and says when there is no copy", async () => {
