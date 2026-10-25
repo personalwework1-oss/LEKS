@@ -1,0 +1,49 @@
+name: Diagnose
+
+# Reads the server's state for troubleshooting: push sign-up and send results,
+# call server, recent errors. Nothing secret is printed (no tokens, no keys).
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_IP: 188.245.92.101
+
+jobs:
+  diagnose:
+    name: Server diagnostics
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh report
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 "$SERVER_IP" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh "root@$SERVER_IP" bash -s > report/README.md 2>&1 <<'SCRIPT'
+            cd /opt/leks
+            echo "# Server diagnostics $(date -u +%FT%TZ)"
+            echo '```'
+            docker compose ps --format '{{.Service}}: {{.Status}}'
+            echo "--- devices and push sign-ups"
+            docker compose exec -T db psql -U leks -d leks -At -c "SELECT 'devices', count(*) FROM devices UNION ALL SELECT 'push tokens (' || provider || ')', count(*) FROM push_tokens GROUP BY provider UNION ALL SELECT 'queued messages', count(*) FROM message_queue" 2>&1
+            docker compose exec -T db psql -U leks -d leks -At -c "SELECT d.platform, left(d.id::text, 8), d.last_seen_at, p.provider, p.updated_at FROM devices d LEFT JOIN push_tokens p ON p.device_id = d.id ORDER BY d.last_seen_at DESC NULLS LAST LIMIT 10" 2>&1
+            echo "--- server log: push"
+            docker compose logs --since 24h server 2>&1 | grep -iE "push|fcm|firebase" | tail -40
+            echo "--- server log: errors"
+            docker compose logs --since 24h server 2>&1 | grep -iE '"level":(50|60)|error' | tail -20
+            echo '```'
+          SCRIPT
+          cat report/README.md
+      - name: Publish to the diagnostics branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd report
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -qm "Diagnostics"
+          git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:diagnostics

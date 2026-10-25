@@ -76,7 +76,10 @@ export class Hub {
       if (connections && connections.size > 0) {
         for (const connection of connections) this.deliver(connection);
       } else if (wake) {
-        this.push.notify(deviceId, wake).catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
+        this.push
+          .notify(deviceId, wake)
+          .then(() => this.log.info({ reason: wake }, "push signal handed over"))
+          .catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
       }
     }
   }
