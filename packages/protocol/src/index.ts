@@ -251,6 +251,8 @@ export const ClientFrame = z.discriminatedUnion("type", [
     wrappedKey: z.string().min(1).max(2048),
   }),
   z.object({ type: z.literal("get_backup"), requestId: RequestId }),
+  /** Asks these devices' apps to bring my devices into our chats now (after a restore). No content. */
+  z.object({ type: z.literal("nudge"), deviceIds: z.array(Id).min(1).max(1000) }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -329,6 +331,8 @@ export const ServerFrame = z.discriminatedUnion("type", [
     devices: z.array(z.object({ deviceId: Id, platform: z.string(), lastSeenAt: z.number().int().nullable() })),
   }),
   z.object({ type: z.literal("device_removed"), requestId: RequestId }),
+  /** Someone's devices changed: check the chats with this account. */
+  z.object({ type: z.literal("nudge"), accountId: Id }),
   z.object({ type: z.literal("backup_saved"), requestId: RequestId }),
   z.object({
     type: z.literal("backup"),

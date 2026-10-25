@@ -74,6 +74,17 @@ describe.skipIf(!databaseUrl)("devices and backups", () => {
     bobClient.close();
   });
 
+  it("passes a nudge to online devices, saying only which account it is from", async () => {
+    const alice = await register(app, "ndg_alice");
+    const bob = await register(app, "ndg_bob");
+    const aliceClient = await TestClient.signedIn(app, alice.session, alice.key);
+    const bobClient = await TestClient.signedIn(app, bob.session, bob.key);
+    aliceClient.send({ type: "nudge", deviceIds: [bob.session.deviceId] });
+    expect(await bobClient.next("nudge")).toEqual({ type: "nudge", accountId: alice.session.accountId });
+    aliceClient.close();
+    bobClient.close();
+  });
+
   it("deletes devices not seen for 30 days, keeping the rest", async () => {
     const old = await register(app, "old_phone");
     const fresh = await register(app, "new_phone");

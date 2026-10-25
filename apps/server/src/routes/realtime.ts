@@ -234,6 +234,11 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
           return;
         }
 
+        case "nudge": {
+          hub.nudge(frame.deviceIds, me.accountId);
+          return;
+        }
+
         case "list_devices": {
           const devices = await store.listDevices(frame.accountId);
           // When others were last seen is nobody else's business: only the ids for other accounts.

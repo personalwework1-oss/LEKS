@@ -26,6 +26,8 @@ export interface Conversation {
   version: number;
   /** I left the group or was removed; it stays readable but closed. */
   left: boolean;
+  /** Restored from a backup on a new phone: readable, waiting for someone in it to add this phone. */
+  rejoining?: boolean;
 }
 
 /**
@@ -58,7 +60,7 @@ export interface Message {
   /** A photo or file; `text` is then its caption. */
   attachment: Attachment | null;
   /** A note in the chat about a call (kept only on this phone). */
-  event?: CallEvent | null;
+  event?: ChatEvent | null;
 }
 
 export type CallOutcome = "ended" | "missed" | "declined" | "no_answer" | "cancelled" | "failed";
@@ -70,6 +72,13 @@ export interface CallEvent {
   /** How long the conversation lasted, in ms (ended calls). */
   duration: number;
 }
+
+/** Someone in the chat (the message's sender) started using another device. */
+export interface DeviceEvent {
+  type: "device";
+}
+
+export type ChatEvent = CallEvent | DeviceEvent;
 
 export type AttachmentKind = "image" | "video" | "file" | "voice";
 

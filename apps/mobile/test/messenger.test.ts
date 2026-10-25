@@ -152,6 +152,8 @@ class FakeServer {
   tickets = new Map<string, string>();
   blobs = new Map<string, Buffer>();
   failUploads = false;
+  removed = new Set<string>();
+  nudged: string[] = [];
   /** One clock for everyone, so message order is the order things happened. */
   clock = 1_000;
   tick = () => (this.clock += 1000);
@@ -190,6 +192,12 @@ class Phone {
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
         }
+        if (frame.type === "list_devices") {
+          const devices = [...server.phones.values()]
+            .filter((p) => p.me.accountId === frame.accountId && !server.removed.has(p.me.deviceId))
+            .map((p) => ({ deviceId: p.me.deviceId }));
+          return { type: "devices", requestId: "r", accountId: frame.accountId, devices };
+        }
         if (frame.type === "request_upload") {
           const blobId = `blob-${server.nextId++}`;
           server.tickets.set(blobId, `token-${blobId}`);
@@ -213,6 +221,9 @@ class Phone {
         return { type: "sent", id: frame.id, accepted: frame.recipients, unknown: [] };
       },
       ack: (ids) => phone.acked.push(...ids),
+      notify: (frame) => {
+        if (frame.type === "nudge") server.nudged.push(...frame.deviceIds);
+      },
     };
     this.files = new TempFiles(mkdtempSync(join(tmpdir(), `leks-${me.deviceId}-`)), server);
     this.messenger = new Messenger(this.engine, transport, this.store, me, () => `${me.deviceId}-${++this.uuidCounter}`, server.tick, this.files);
@@ -794,6 +805,71 @@ describe("groups", () => {
     const { id, skipped } = await a.messenger.createGroup("Чат", [asUser(bob), asUser(carolMe)]);
     expect(skipped.map((p) => p.username)).toEqual(["carol"]);
     expect((await a.messenger.conversation(id))!.members.map((m) => m.username)).toEqual(["alice", "bob"]);
+  });
+});
+
+describe("several devices", () => {
+  it("brings the other person's new phone into the chat; it reads what follows", async () => {
+    const { server, a, b, chatId } = await chatting();
+    const b2 = new Phone(server, { ...bob, deviceId: "dev-bob2" });
+    await b2.messenger.onAuthenticated(0);
+    await a.messenger.send(chatId, "до");
+    await a.messenger.syncDevices(chatId, true);
+    await a.messenger.flush();
+    await b.deliver();
+    await b2.deliver();
+    expect(await a.engine.members(chatId)).toContain("acc-bob:dev-bob2");
+    const chat = await b2.store.conversation(chatId);
+    expect(chat?.peerAccountId).toBe("acc-alice");
+    expect(chat?.title).toBe("Алиса");
+
+    await a.messenger.send(chatId, "после");
+    await a.messenger.flush();
+    await b2.deliver();
+    expect((await b2.store.messages(chatId)).map((m) => m.text)).toEqual(["после"]);
+    // Everyone sees that a phone was added.
+    expect((await a.store.messages(chatId)).some((m) => m.event?.type === "device")).toBe(true);
+  });
+
+  it("brings my own new phone in and tells it who the chat is with", async () => {
+    const { server, a, chatId } = await chatting();
+    await a.messenger.flush();
+    const a2 = new Phone(server, { ...alice, deviceId: "dev-alice2" });
+    await a2.messenger.onAuthenticated(0);
+    await a.messenger.syncDevices(chatId, true);
+    await a.messenger.flush();
+    await a2.deliver();
+    const chat = await a2.store.conversation(chatId);
+    expect(chat?.peerAccountId).toBe("acc-bob");
+    expect(chat?.title).toBe("Боб");
+  });
+
+  it("only one phone changes the group, and a removed phone is cut off", async () => {
+    const { server, a, b, chatId } = await chatting();
+    const b2 = new Phone(server, { ...bob, deviceId: "dev-bob2" });
+    await b2.messenger.onAuthenticated(0);
+    const before = server.sends.length;
+    await b.messenger.syncDevices(chatId, true);
+    expect(server.sends.length).toBe(before);
+    expect(await b.engine.members(chatId)).not.toContain("acc-bob:dev-bob2");
+
+    await a.messenger.syncDevices(chatId, true);
+    await a.messenger.flush();
+    await b2.deliver();
+    server.removed.add("dev-bob2");
+    await a.messenger.syncDevices(chatId, true);
+    await a.messenger.flush();
+    await b2.deliver();
+    expect(await a.engine.members(chatId)).not.toContain("acc-bob:dev-bob2");
+    expect((await b2.store.conversation(chatId))?.left).toBe(true);
+  });
+
+  it("a restored phone asks the people in its chats to bring it in", async () => {
+    const { server, a, chatId } = await chatting();
+    expect(chatId).toBeTruthy();
+    await a.messenger.nudgeContacts();
+    expect(server.nudged).toContain("dev-bob");
+    expect(server.nudged).not.toContain("dev-alice");
   });
 });
 

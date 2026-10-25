@@ -92,6 +92,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const created = new Messenger(engine, realtime, store, session, () => Crypto.randomUUID(), Date.now, new ExpoFiles(API_URL, session.deviceId));
       realtime.setHandlers({
         onMessages: (messages) => void created.onMessages(messages),
+        onNudge: (accountId) => void created.onNudge(accountId).catch((e) => console.warn("device sync", e)),
         onAuthenticated: (available) => {
           void created.onAuthenticated(available).catch((e) => console.warn("key packages", e));
           void registerForPush(realtime);

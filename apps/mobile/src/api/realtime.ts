@@ -35,6 +35,8 @@ export interface RealtimeHandlers {
   onMessages?: (messages: DeliveredMessage[]) => void;
   /** Called after each sign-in with how many key packages the server still holds for this device. */
   onAuthenticated?: (keyPackagesAvailable: number) => void;
+  /** Someone's devices changed; check the chats with this account. */
+  onNudge?: (accountId: string) => void;
 }
 
 /** Thrown when a request gets an `error` frame back. */
@@ -90,6 +92,11 @@ export class Realtime {
     this.ws = undefined;
     this.setState("offline");
     this.failPending(new RealtimeError("offline"));
+  }
+
+  /** Sends a frame that has no answer, if online (best effort). */
+  notify(frame: Extract<ClientFrame, { type: "nudge" }>): void {
+    if (this.state === "online") this.send(frame);
   }
 
   /** Sends a request and resolves with the matching answer once online. */
@@ -222,6 +229,9 @@ export class Realtime {
         this.keyPackagesAvailable = frame.keyPackagesAvailable;
         this.setState("online");
         this.handlers.onAuthenticated?.(frame.keyPackagesAvailable);
+        return;
+      case "nudge":
+        this.handlers.onNudge?.(frame.accountId);
         return;
       case "deliver":
         this.options.onMessages?.(frame.messages);

@@ -17,7 +17,7 @@ import {
 } from "./types";
 
 /** The part of the server connection the messenger uses (the Realtime client in the app). */
-export type Transport = Pick<Realtime, "connectionState" | "request" | "sendMessage" | "ack">;
+export type Transport = Pick<Realtime, "connectionState" | "request" | "sendMessage" | "ack" | "notify">;
 
 export interface Me {
   accountId: string;
@@ -41,6 +41,8 @@ const TYPING_SEND_EVERY_MS = 4000;
 /** A typing signal older than this (for example, delivered after being offline) is ignored. */
 const TYPING_STALE_MS = 15000;
 const MAX_TEXT = 4000;
+/** How long a list of someone's devices is trusted before asking the server again. */
+const DEVICE_CACHE_MS = 5 * 60 * 1000;
 /** Photos up to this size download by themselves; bigger ones and other files on a tap. */
 const AUTO_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_THUMB = 12_000;
@@ -182,6 +184,7 @@ const CALL_TEXT: Record<CallOutcome, [string, string]> = {
 /** "Пропущенный звонок", "Исходящий видеозвонок · 2:15" and so on. */
 export function callText(m: Message): string {
   const event = m.event!;
+  if (event.type !== "call") return "Новое устройство";
   let text = CALL_TEXT[event.outcome][m.outgoing ? 0 : 1];
   if (event.video) text = text.replace("звонок", "видеозвонок");
   if (event.outcome === "ended" && event.duration > 0) {
@@ -193,7 +196,8 @@ export function callText(m: Message): string {
 
 export function previewOf(m: Message | null): string | null {
   if (!m) return null;
-  if (m.event) return `📞 ${callText(m)}`;
+  if (m.event?.type === "call") return `📞 ${callText(m)}`;
+  if (m.event?.type === "device") return "🔒 Новое устройство в чате";
   if (m.deleted) return "Сообщение удалено";
   if (m.attachment && !m.text) {
     const kind = m.attachment.kind;
@@ -231,6 +235,10 @@ export class Messenger {
   /** Attachments being uploaded or downloaded right now (message ids). */
   private readonly transfers = new Set<string>();
   private callListener: ((signal: CallSignal) => void) | null = null;
+  private readonly deviceCache = new Map<string, { at: number; ids: string[] }>();
+  private readonly syncing = new Map<string, Promise<void>>();
+  /** Group members just before a commit is applied, to tell which devices it added. */
+  private readonly knownMembers = new Map<string, string[]>();
   private arrivalListener: ((conversationId: string) => void) | null = null;
 
   /** Told when a message from someone else arrives (to notify if the app is in the background). */
@@ -276,7 +284,7 @@ export class Messenger {
   /** Sends a call signal into the chat (through the outbox, so it keeps its place in line). */
   async sendCallSignal(conversationId: string, payload: Extract<Payload, { type: `call_${string}` }>): Promise<void> {
     const chat = await this.store.conversation(conversationId);
-    if (!chat || chat.left) throw new MessengerError("not_allowed");
+    if (!chat || chat.left || chat.rejoining) throw new MessengerError("not_allowed");
     await this.sendPayload(conversationId, payload, null);
   }
 
@@ -335,6 +343,8 @@ export class Messenger {
     await this.flush();
     // Uploads cut off by a lost connection or a closed app continue now.
     for (const message of await this.store.pendingUploads()) void this.upload(message.id);
+    // Devices that appeared or disappeared since last time (a friend's new phone, a removed one).
+    void this.rememberAllMembers().then(() => this.syncAll());
   }
 
   /** Messages from the server, processed strictly in order, then confirmed. */
@@ -367,8 +377,16 @@ export class Messenger {
   private async receiveOne(message: DeliveredMessage): Promise<{ conversationId: string; id: string } | null> {
     if (message.kind === "welcome") {
       const groupId = await this.engine.join(message.payload);
-      if (!(await this.store.conversation(groupId))) {
-        await this.store.saveConversation(directChat(groupId, message.from.accountId, message.sentAt));
+      this.knownMembers.set(groupId, await this.engine.members(groupId));
+      const existing = await this.store.conversation(groupId);
+      if (!existing) {
+        // The inviter may be one of my own phones, so the person this chat is with comes from the group.
+        const others = (await this.engine.members(groupId)).map((m) => parseIdentity(m)?.accountId).filter((a) => a && a !== this.me.accountId);
+        const peer = others.includes(message.from.accountId) ? message.from.accountId : (others[0] ?? message.from.accountId);
+        await this.store.saveConversation(directChat(groupId, peer, message.sentAt));
+      } else if (existing.rejoining || existing.left) {
+        // This phone (restored from a backup) is back in the chat.
+        await this.store.saveConversation({ ...existing, rejoining: false, left: false });
       }
       return null;
     }
@@ -379,6 +397,18 @@ export class Messenger {
       const state = await this.engine.groupState(result.groupId).catch(() => null);
       const chat = await this.store.conversation(result.groupId);
       if (state && !state.active && chat && !chat.left) await this.store.saveConversation({ ...chat, left: true });
+      // A new phone of someone already in the chat: shown to everyone, not just to the phone that added it.
+      if (state?.active && chat && !chat.left) {
+        const known = this.knownMembers.get(result.groupId);
+        if (known) {
+          const accountsBefore = new Set(known.map((m) => parseIdentity(m)?.accountId));
+          const newDevices = state.members.filter((m) => !known.includes(m));
+          for (const account of new Set(newDevices.map((m) => parseIdentity(m)?.accountId))) {
+            if (account && accountsBefore.has(account)) await this.noteDevice(result.groupId, account);
+          }
+        }
+        this.knownMembers.set(result.groupId, state.members);
+      }
       return null;
     }
     if (result.kind !== "message") return null;
@@ -400,14 +430,16 @@ export class Messenger {
 
     switch (payload.type) {
       case "intro":
-        if (!isGroup && fromPeer && payload.accountId === sender.accountId) {
-          await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username });
+        // From the person themselves, or from one of my phones bringing a new phone of mine into the chat.
+        if (!isGroup && ((fromPeer && payload.accountId === sender.accountId) || (mine && payload.accountId === conversation.peerAccountId))) {
+          await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username || null });
         }
         return null;
 
       case "group_info": {
         // The inviter turns a fresh chat into a group; after that only admins can change it.
-        const fresh = !isGroup && conversation.lastText === null && sender.accountId === conversation.peerAccountId;
+        // (or, on a phone just brought into an existing group, any member telling it what the group is).
+        const fresh = !isGroup && conversation.lastText === null && conversation.version === 0;
         const byAdmin = isGroup && conversation.members.some((m) => m.accountId === sender.accountId && m.role === "admin");
         if (!(fresh || byAdmin || mine) || payload.version <= conversation.version) return null;
         const members = sortMembers(payload.members);
@@ -644,7 +676,7 @@ export class Messenger {
   async send(conversationId: string, text: string, replyTo: string | null = null): Promise<Message> {
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
-    if (conversation.left) throw new MessengerError("not_allowed");
+    if (conversation.left || conversation.rejoining) throw new MessengerError("not_allowed");
     const body = text.slice(0, MAX_TEXT);
 
     const message: Message = {
@@ -667,6 +699,7 @@ export class Messenger {
     await this.store.saveConversation({ ...conversation, lastText: body, lastAt: message.sentAt });
     this.typingSentAt.delete(conversationId);
     await this.sendPayload(conversationId, payload, message.id, message.id);
+    void this.syncDevices(conversationId);
     return message;
   }
 
@@ -679,7 +712,7 @@ export class Messenger {
     if (file.size > MAX_BLOB_BYTES - 1024 * 1024) throw new MessengerError("too_large");
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
-    if (conversation.left) throw new MessengerError("not_allowed");
+    if (conversation.left || conversation.rejoining) throw new MessengerError("not_allowed");
 
     const id = this.uuid();
     const localUri = this.files.mediaUri(id, file.name);
@@ -979,6 +1012,166 @@ export class Messenger {
       }
     }
     return true;
+  }
+
+  // ---- devices in chats -----------------------------------------------------
+
+  private async devicesOf(accountId: string, fresh: boolean): Promise<string[]> {
+    const cached = this.deviceCache.get(accountId);
+    if (!fresh && cached && this.now() - cached.at < DEVICE_CACHE_MS) return cached.ids;
+    const answer = await this.transport.request({ type: "list_devices", accountId }, "devices");
+    const ids = answer.devices.map((d) => d.deviceId);
+    this.deviceCache.set(accountId, { at: this.now(), ids });
+    return ids;
+  }
+
+  private chatAccounts(chat: Conversation): string[] {
+    const accounts = chat.kind === "group" ? chat.members.map((m) => m.accountId) : [chat.peerAccountId];
+    return [...new Set([...accounts, this.me.accountId])];
+  }
+
+  private async rememberAllMembers(): Promise<void> {
+    for (const chat of await this.store.conversations()) {
+      if (chat.left || this.knownMembers.has(chat.id)) continue;
+      const state = await this.engine.groupState(chat.id).catch(() => null);
+      if (state?.active) this.knownMembers.set(chat.id, state.members);
+    }
+  }
+
+  /** Checks every chat (after connecting). */
+  async syncAll(fresh = false): Promise<void> {
+    for (const chat of await this.store.conversations()) {
+      if (!chat.left && !chat.rejoining) await this.syncDevices(chat.id, fresh);
+    }
+  }
+
+  /** Someone's devices changed: check the chats with them right away. */
+  async onNudge(accountId: string): Promise<void> {
+    this.deviceCache.delete(accountId);
+    for (const chat of await this.store.conversations()) {
+      if (!chat.left && !chat.rejoining && this.chatAccounts(chat).includes(accountId)) await this.syncDevices(chat.id, true);
+    }
+  }
+
+  /** After a restore: asks the people in my chats to bring this phone in now (they also do it on their own later). */
+  async nudgeContacts(): Promise<void> {
+    const accounts = new Set<string>();
+    for (const chat of await this.store.conversations()) for (const account of this.chatAccounts(chat)) accounts.add(account);
+    const devices: string[] = [];
+    for (const account of accounts) {
+      for (const id of await this.devicesOf(account, true).catch(() => [] as string[])) if (id !== this.me.deviceId) devices.push(id);
+    }
+    for (let i = 0; i < devices.length; i += 1000) this.transport.notify({ type: "nudge", deviceIds: devices.slice(i, i + 1000) });
+  }
+
+  /**
+   * Brings a chat's encryption group in line with its members' current devices:
+   * adds new ones (another phone, a reinstall) and removes deleted ones. Exactly
+   * one device does it — the first, in sort order, of those that stay — so two
+   * phones never change the group at the same moment.
+   */
+  syncDevices(conversationId: string, fresh = false): Promise<void> {
+    const running = this.syncing.get(conversationId);
+    if (running) return running;
+    const run = this.doSyncDevices(conversationId, fresh)
+      .catch((error: unknown) => console.warn("device sync", error))
+      .finally(() => this.syncing.delete(conversationId));
+    this.syncing.set(conversationId, run);
+    return run;
+  }
+
+  private async doSyncDevices(conversationId: string, fresh: boolean): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat || chat.left || chat.rejoining) return;
+    const state = await this.engine.groupState(conversationId);
+    if (!state.active) return;
+    const accounts = this.chatAccounts(chat);
+
+    const expected = new Set<string>();
+    for (const account of accounts) for (const id of await this.devicesOf(account, fresh)) expected.add(identityOf({ accountId: account, deviceId: id }));
+    const current = state.members;
+    const staying = current.filter((m) => expected.has(m)).sort();
+    if (staying[0] !== this.identity) return;
+
+    // Only devices of people already in the group: someone just removed (whose leaving
+    // has not reached the member list yet) is never brought back.
+    const present = new Set(current.map((m) => parseIdentity(m)?.accountId));
+    const gone = current.filter((m) => !expected.has(m) && accounts.includes(parseIdentity(m)?.accountId ?? ""));
+    const missing = [...expected].filter((m) => !current.includes(m) && present.has(parseIdentity(m)?.accountId));
+    if (gone.length === 0 && missing.length === 0) return;
+    // Never remove anyone on the strength of a list that may be out of date.
+    if (gone.length > 0 && !fresh) return this.doSyncDevices(conversationId, true);
+
+    if (gone.length > 0) {
+      const before = await this.recipients(conversationId);
+      const commit = await this.engine.removeMembers(conversationId, gone);
+      if (before.length > 0) await this.queue("commit", before, commit, null);
+    }
+
+    const byAccount = new Map<string, string[]>();
+    for (const identity of missing) {
+      const parsed = parseIdentity(identity);
+      if (parsed) byAccount.set(parsed.accountId, [...(byAccount.get(parsed.accountId) ?? []), parsed.deviceId]);
+    }
+    const addedAccounts: string[] = [];
+    for (const [account, deviceIds] of byAccount) {
+      const claimed = await this.transport.request({ type: "claim_key_packages", accountId: account }, "key_packages");
+      let added = false;
+      for (const item of claimed.items) {
+        if (!deviceIds.includes(item.deviceId)) continue;
+        const before = await this.recipients(conversationId);
+        const invitation = await this.engine.addMember(conversationId, item.keyPackage);
+        if (before.length > 0) await this.queue("commit", before, invitation.commit, null);
+        await this.queue("welcome", [item.deviceId], invitation.welcome, null);
+        added = true;
+      }
+      // Visible in the chat, so a device slipped in by someone else would not go unnoticed.
+      if (added) {
+        await this.noteDevice(conversationId, account);
+        addedAccounts.push(account);
+      }
+    }
+
+    if (addedAccounts.length > 0) {
+      const latest = (await this.store.conversation(conversationId)) ?? chat;
+      // Tell the new device what this chat is (same version: the others already know it).
+      if (latest.kind === "group") {
+        await this.sendPayload(conversationId, { v: 1, type: "group_info", title: latest.title, members: latest.members, version: latest.version }, null);
+      } else {
+        // A new phone of mine learns who the chat is with; a new phone of theirs learns who I am.
+        if (addedAccounts.includes(this.me.accountId) && latest.peerAccountId !== this.me.accountId) {
+          await this.sendPayload(conversationId, { v: 1, type: "intro", accountId: latest.peerAccountId, displayName: latest.title, username: latest.username ?? "" }, null);
+        }
+        if (addedAccounts.some((a) => a !== this.me.accountId)) {
+          await this.sendPayload(conversationId, { v: 1, type: "intro", accountId: this.me.accountId, displayName: this.me.displayName, username: this.me.username }, null);
+        }
+      }
+    }
+    const after = await this.engine.groupState(conversationId).catch(() => null);
+    if (after) this.knownMembers.set(conversationId, after.members);
+    this.changed();
+    void this.flush();
+  }
+
+  private async noteDevice(conversationId: string, accountId: string): Promise<void> {
+    const conversation = await this.store.conversation(conversationId);
+    if (!conversation) return;
+    const message: Message = {
+      id: this.uuid(),
+      conversationId,
+      senderAccountId: accountId,
+      outgoing: accountId === this.me.accountId,
+      text: "",
+      sentAt: this.now(),
+      status: "read",
+      replyTo: null,
+      editedAt: null,
+      deleted: false,
+      reactions: {},
+      attachment: null,
+      event: { type: "device" },
+    };
+    await this.store.addMessage(message);
   }
 
   // ---- groups -------------------------------------------------------------

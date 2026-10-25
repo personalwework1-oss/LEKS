@@ -12,7 +12,7 @@ import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { callText, MessengerError, previewOf } from "@/messaging/messenger";
 import { useConversation, useMessages, useTyping } from "@/messaging/hooks";
-import { type Message, REACTIONS } from "@/messaging/types";
+import { type CallEvent, type Message, REACTIONS } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -163,7 +163,7 @@ export default function Chat() {
           </View>
         </View>
         </Pressable>
-        {chat && !chat.left ? (
+        {chat && !chat.left && !chat.rejoining ? (
           <>
             <IconButton icon="phone" label="Аудиозвонок" tone="plain" onPress={() => void calls?.start(id, false)} />
             <IconButton icon="video" label="Видеозвонок" tone="plain" onPress={() => void calls?.start(id, true)} />
@@ -184,6 +184,11 @@ export default function Chat() {
                 {item.label}
               </AppText>
             </View>
+          ) : item.message.event?.type === "device" ? (
+            <DeviceNote
+              message={item.message}
+              name={item.message.outgoing ? "вас" : isGroup ? (names.get(item.message.senderAccountId) ?? "участника") : title}
+            />
           ) : item.message.event ? (
             <CallNote message={item.message} onCall={(video) => void calls?.start(id, video)} />
           ) : (
@@ -222,7 +227,13 @@ export default function Chat() {
           </AppText>
         </View>
       ) : null}
-      {chat?.left ? (
+      {chat?.rejoining && !chat.left ? (
+        <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
+          <AppText muted style={{ textAlign: "center" }}>
+            Переписка восстановлена. Писать можно, как только телефон собеседника подключит это устройство — обычно это занимает минуту, когда он в сети.
+          </AppText>
+        </View>
+      ) : chat?.left ? (
         <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
           <AppText muted style={{ textAlign: "center" }}>
             Вы больше не участник этой группы.
@@ -614,10 +625,23 @@ function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: (
   );
 }
 
+/** "У Анны новое устройство": a phone was added to the chat's encryption, so nothing slips in unnoticed. */
+function DeviceNote({ message, name }: { message: Message; name: string }) {
+  const p = usePalette();
+  return (
+    <View style={{ alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, marginVertical: 4, backgroundColor: p.surface, maxWidth: 320 }}>
+      <Icon name="lock" size={14} color={p.accentText} strokeWidth={2.2} />
+      <AppText variant="caption" muted style={{ flexShrink: 1 }}>
+        {`У ${name} новое устройство в этом чате · ${clockTime(message.sentAt)}`}
+      </AppText>
+    </View>
+  );
+}
+
 /** "Пропущенный звонок · 12:40" in the middle of the chat; tapping calls back. */
 function CallNote({ message, onCall }: { message: Message; onCall: (video: boolean) => void }) {
   const p = usePalette();
-  const event = message.event!;
+  const event = message.event as CallEvent;
   const missed = !message.outgoing && (event.outcome === "missed" || event.outcome === "no_answer" || event.outcome === "cancelled");
   return (
     <Pressable

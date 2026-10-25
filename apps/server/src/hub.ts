@@ -74,6 +74,13 @@ export class Hub {
   }
 
   /** New messages were queued for these devices: deliver now, or send a push signal. */
+  /** Passes a "check your chats with this account" signal to whichever of these devices are online. */
+  nudge(deviceIds: string[], fromAccountId: string): void {
+    for (const deviceId of new Set(deviceIds)) {
+      for (const connection of this.connections.get(deviceId) ?? []) connection.send({ type: "nudge", accountId: fromAccountId });
+    }
+  }
+
   /** Delivers to connected devices; offline ones get a push only when the sender asked to wake them. */
   notifyQueued(deviceIds: string[], wake?: WakeReason, from?: string): void {
     for (const deviceId of new Set(deviceIds)) {
