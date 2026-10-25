@@ -10,7 +10,7 @@ import { LeksCrypto } from "../../modules/leks-crypto";
 import { DeviceKey } from "../crypto/deviceKey";
 import { NativeEngine } from "../crypto/engine";
 import { identityOf, Messenger } from "../messaging/messenger";
-import { CallManager } from "../calls/CallManager";
+import { CallManager, RING_MS } from "../calls/CallManager";
 import { LeksCalls } from "../../modules/leks-calls";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
@@ -128,7 +128,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
       created.onCall((signal) => {
         // Ringing while the app is in the background: the phone-style call screen when available.
-        if (signal.type === "invite") {
+        // Only for fresh invites, and only when the app is not on screen (then the call screen shows).
+        if (signal.type === "invite" && AppState.currentState !== "active" && Date.now() - signal.sentAt < RING_MS) {
           if (LeksCalls) LeksCalls.showIncomingCall("LEKS", "Входящий звонок");
           else void notifyLocally("call").catch(() => undefined);
         }
