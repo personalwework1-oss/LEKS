@@ -126,6 +126,27 @@ describe("calls", () => {
     expect(ended.at(-1)).toMatchObject({ outgoing: false, video: true, reason: "missed", duration: 0 });
   });
 
+  it("answers or declines right away when the button on the notification was pressed first", async () => {
+    const { manager, sent, now, advance } = setup();
+    manager.expect("answer");
+    manager.receive({ type: "invite", conversationId: "chat", from: "bob", callId: "n1", video: false, key: "x", sentAt: now() });
+    await Promise.resolve();
+    expect(manager.state.phase).toBe("active");
+    expect(sent.at(-1)!.payload).toMatchObject({ type: "call_accept", callId: "n1" });
+
+    await manager.hangUp();
+    manager.expect("decline");
+    manager.receive({ type: "invite", conversationId: "chat", from: "bob", callId: "n2", video: false, key: "x", sentAt: now() });
+    await Promise.resolve();
+    expect(sent.at(-1)!.payload).toMatchObject({ type: "call_decline", callId: "n2" });
+
+    // An old button press does not answer a later call.
+    manager.expect("answer");
+    advance(RING_MS + 1);
+    manager.receive({ type: "invite", conversationId: "chat", from: "bob", callId: "n3", video: false, key: "x", sentAt: now() });
+    expect(manager.state.phase).toBe("incoming");
+  });
+
   it("fails cleanly when calls are not available on the server", async () => {
     const { manager, fail } = setup();
     fail();

@@ -31,15 +31,15 @@ const chatMessage = (token: string) => ({
   android: { priority: "HIGH", collapse_key: "messages", notification: { channel_id: "messages", tag: "messages" } },
 });
 
-/** Rings on its own loud channel; useless after the call has stopped ringing, so it expires quickly. */
+/**
+ * A silent wake-up: the app's background task turns it into the ringing,
+ * full-screen call notification. It carries no content, only that it is a call,
+ * and is useless after ringing stops, so it expires quickly.
+ */
 const callMessage = (token: string) => ({
   token,
-  notification: { title: "LEKS", body: "Входящий звонок" },
-  android: {
-    priority: "HIGH",
-    ttl: "45s",
-    notification: { channel_id: "calls", tag: "call", notification_priority: "PRIORITY_MAX", visibility: "PUBLIC", default_sound: true },
-  },
+  data: { leks: "call" },
+  android: { priority: "HIGH", ttl: "45s" },
 });
 
 const b64url = (value: string | Buffer) => Buffer.from(value).toString("base64url");

@@ -67,6 +67,8 @@ export class CallManager {
   private current: CallState = IDLE;
   private readonly listeners = new Set<(state: CallState) => void>();
   private ringTimer: unknown = null;
+  /** A button pressed on the call notification before the app had the invite. */
+  private pending: { action: "answer" | "decline"; until: number } | null = null;
 
   constructor(private readonly deps: CallDeps) {}
 
@@ -160,6 +162,18 @@ export class CallManager {
     await this.deps.send(conversationId, { v: 1, type: "call_end", callId }).catch(() => undefined);
   }
 
+  /**
+   * The person pressed Answer or Decline on the notification; the encrypted
+   * invite arrives a moment later, once the app is connected.
+   */
+  expect(action: "answer" | "decline"): void {
+    if (this.current.phase === "incoming") {
+      void (action === "answer" ? this.accept() : this.decline());
+      return;
+    }
+    this.pending = { action, until: this.deps.now() + RING_MS };
+  }
+
   /** Forget why the last call ended (after showing it). */
   dismiss(): void {
     if (this.current.phase === "idle" && this.current.ended) this.set({ ended: null });
@@ -191,6 +205,9 @@ export class CallManager {
         this.ring(() => {
           if (this.current.callId === signal.callId && this.current.phase === "incoming") this.finish("missed");
         });
+        const pending = this.pending;
+        this.pending = null;
+        if (pending && pending.until > this.deps.now()) void (pending.action === "answer" ? this.accept() : this.decline());
         return;
       }
       case "accept":

@@ -18,6 +18,7 @@ import { AppText, Avatar } from "@/components/ui";
 import { formatDuration } from "@/features/waveform";
 import { useConversation } from "@/messaging/hooks";
 import { useSession } from "@/state/session";
+import { LeksCalls } from "../../modules/leks-calls";
 import type { CallState, EndReason } from "./CallManager";
 
 const ENDED_TEXT: Record<EndReason, string> = {
@@ -60,6 +61,13 @@ export function CallOverlay() {
     const timer = setTimeout(() => setToast(null), 2000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // While a call rings or runs: no second ringing notification, and the call shows over the lock screen.
+  useEffect(() => {
+    const busy = !!state && state.phase !== "idle";
+    if (busy) LeksCalls?.cancelIncomingCall();
+    LeksCalls?.setShowOverLockScreen(busy);
+  }, [state?.phase]);
 
   // Vibrate while an incoming call rings.
   useEffect(() => {
