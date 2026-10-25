@@ -251,6 +251,8 @@ export const ClientFrame = z.discriminatedUnion("type", [
     wrappedKey: z.string().min(1).max(2048),
   }),
   z.object({ type: z.literal("get_backup"), requestId: RequestId }),
+  /** The name others see when they look me up by @username (photo and "about" go only end-to-end). */
+  z.object({ type: z.literal("update_profile"), requestId: RequestId, displayName: DisplayName }),
   /** Asks these devices' apps to bring my devices into our chats now (after a restore). No content. */
   z.object({ type: z.literal("nudge"), deviceIds: z.array(Id).min(1).max(1000) }),
 ]);
@@ -334,6 +336,7 @@ export const ServerFrame = z.discriminatedUnion("type", [
   /** Someone's devices changed: check the chats with this account. */
   z.object({ type: z.literal("nudge"), accountId: Id }),
   z.object({ type: z.literal("backup_saved"), requestId: RequestId }),
+  z.object({ type: z.literal("profile_updated"), requestId: RequestId }),
   z.object({
     type: z.literal("backup"),
     requestId: RequestId,

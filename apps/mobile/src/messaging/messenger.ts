@@ -11,8 +11,12 @@ import {
   type Message,
   MAX_GROUP_MEMBERS,
   type MessageStore,
+  MAX_ABOUT,
+  MAX_DISPLAY_NAME,
+  MAX_PHOTO_CHARS,
   type OutboxItem,
   type Payload,
+  type Person,
   REACTIONS,
 } from "./types";
 
@@ -33,6 +37,8 @@ export interface BackupDump {
   accountId: string;
   conversations: Conversation[];
   messages: Message[];
+  /** Names, photos and my nicknames for people (added later; older copies have none). */
+  people?: Person[];
 }
 
 export class MessengerError extends Error {
@@ -50,6 +56,8 @@ const TYPING_SEND_EVERY_MS = 4000;
 /** A typing signal older than this (for example, delivered after being offline) is ignored. */
 const TYPING_STALE_MS = 15000;
 const MAX_TEXT = 4000;
+/** Groups up to this size get my profile again whenever someone new joins. */
+const PROFILE_RESEND_MAX_MEMBERS = 30;
 /** How long a list of someone's devices is trusted before asking the server again. */
 const DEVICE_CACHE_MS = 5 * 60 * 1000;
 /** Photos up to this size download by themselves; bigger ones and other files on a tap. */
@@ -98,6 +106,16 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
   switch (value.type) {
     case "intro":
       return isString(value.accountId) && isString(value.displayName) && isString(value.username) ? (value as Payload) : null;
+    case "profile":
+      return isString(value.displayName) &&
+        value.displayName.trim().length > 0 &&
+        value.displayName.length <= MAX_DISPLAY_NAME &&
+        isString(value.about) &&
+        value.about.length <= MAX_ABOUT &&
+        (value.photo === null || (isString(value.photo) && value.photo.length <= MAX_PHOTO_CHARS && /^[A-Za-z0-9+/=]+$/.test(value.photo))) &&
+        typeof value.version === "number"
+        ? (value as Payload)
+        : null;
     case "text":
       return isString(value.id) && isString(value.text) && typeof value.sentAt === "number" && (value.replyTo === undefined || isString(value.replyTo))
         ? (value as Payload)
@@ -423,6 +441,7 @@ export class Messenger {
         const others = (await this.engine.members(groupId)).map((m) => parseIdentity(m)?.accountId).filter((a) => a && a !== this.me.accountId);
         const peer = others.includes(message.from.accountId) ? message.from.accountId : (others[0] ?? message.from.accountId);
         await this.store.saveConversation(directChat(groupId, peer, message.sentAt));
+        await this.shareProfile(groupId);
       } else if (existing.rejoining || existing.left) {
         // This phone (restored from a backup) is back in the chat.
         await this.store.saveConversation({ ...existing, rejoining: false, left: false });
@@ -445,6 +464,10 @@ export class Messenger {
           const newDevices = state.members.filter((m) => !known.includes(m));
           for (const account of new Set(newDevices.map((m) => parseIdentity(m)?.accountId))) {
             if (account && accountsBefore.has(account)) await this.noteDevice(result.groupId, account);
+          }
+          // Newcomers (people or phones) get my photo and "about"; in big groups they get it when I change it.
+          if (newDevices.length > 0 && (chat.kind === "direct" || chat.members.length <= PROFILE_RESEND_MAX_MEMBERS)) {
+            await this.shareProfile(result.groupId);
           }
         }
         this.knownMembers.set(result.groupId, state.members);
@@ -475,6 +498,24 @@ export class Messenger {
           await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username || null });
         }
         return null;
+
+      case "profile": {
+        const known = await this.store.person(sender.accountId);
+        if (known && payload.version <= known.version) return null;
+        await this.store.savePerson({
+          accountId: sender.accountId,
+          displayName: payload.displayName.trim(),
+          username: known?.username ?? (!isGroup ? conversation.username : null),
+          about: payload.about,
+          photo: payload.photo,
+          version: payload.version,
+          nickname: known?.nickname ?? null,
+        });
+        // The chat list shows the new name too.
+        const direct = await this.store.conversationWith(sender.accountId);
+        if (direct && !mine) await this.store.saveConversation({ ...direct, title: payload.displayName.trim() });
+        return null;
+      }
 
       case "group_info": {
         // The inviter turns a fresh chat into a group; after that only admins can change it.
@@ -699,8 +740,10 @@ export class Messenger {
       invited.push(item.deviceId);
     }
 
-    const intro: Payload = { v: 1, type: "intro", accountId: this.me.accountId, displayName: this.me.displayName, username: this.me.username };
+    const intro = await this.introPayload();
     await this.queue("message", invited, await this.engine.encrypt(groupId, utf8Encode(JSON.stringify(intro))), null);
+    const profile = await this.profilePayload();
+    if (profile) await this.queue("message", invited, await this.engine.encrypt(groupId, utf8Encode(JSON.stringify(profile))), null);
 
     await this.store.saveConversation({
       ...directChat(groupId, peer.accountId, this.now()),
@@ -1048,6 +1091,89 @@ export class Messenger {
     return true;
   }
 
+  // ---- profiles --------------------------------------------------------------
+
+  /** Everyone I know something about (and me), for names and photos on screens. */
+  people(): Promise<Person[]> {
+    return this.store.people();
+  }
+
+  person(accountId: string): Promise<Person | null> {
+    return this.store.person(accountId);
+  }
+
+  private async introPayload(): Promise<Payload> {
+    const mine = await this.store.person(this.me.accountId);
+    return { v: 1, type: "intro", accountId: this.me.accountId, displayName: mine?.displayName ?? this.me.displayName, username: this.me.username };
+  }
+
+  private async profilePayload(): Promise<Payload | null> {
+    const mine = await this.store.person(this.me.accountId);
+    if (!mine) return null;
+    return { v: 1, type: "profile", displayName: mine.displayName, about: mine.about, photo: mine.photo, version: mine.version };
+  }
+
+  /** Sends my name, "about" and photo into a chat (only if I ever set them). */
+  private async shareProfile(conversationId: string): Promise<void> {
+    const profile = await this.profilePayload();
+    if (profile) await this.sendPayload(conversationId, profile, null).catch((error: unknown) => console.warn("profile", error));
+  }
+
+  /**
+   * Changes my name, "about" or photo (square JPEG, base64; null removes it).
+   * Goes to everyone I chat with, end-to-end encrypted: the server sees only
+   * the name (it already knows it, to find me by @username).
+   */
+  async setProfile(change: { displayName?: string; about?: string; photo?: string | null }): Promise<Person> {
+    const current = (await this.store.person(this.me.accountId)) ?? {
+      accountId: this.me.accountId,
+      displayName: this.me.displayName,
+      username: this.me.username,
+      about: "",
+      photo: null,
+      version: 0,
+      nickname: null,
+    };
+    const displayName = (change.displayName ?? current.displayName).trim().slice(0, MAX_DISPLAY_NAME);
+    if (!displayName) throw new MessengerError("not_allowed");
+    const photo = change.photo === undefined ? current.photo : change.photo;
+    if (photo && photo.length > MAX_PHOTO_CHARS) throw new MessengerError("too_large");
+    const next: Person = {
+      ...current,
+      displayName,
+      about: (change.about ?? current.about).trim().slice(0, MAX_ABOUT),
+      photo,
+      version: Math.max(this.now(), current.version + 1),
+    };
+    await this.store.savePerson(next);
+    if (displayName !== current.displayName) {
+      await this.transport.request({ type: "update_profile", displayName }, "profile_updated").catch((error: unknown) => console.warn("name on server", error));
+    }
+    this.changed();
+    for (const chat of await this.store.conversations()) {
+      if (!chat.left && !chat.rejoining) await this.shareProfile(chat.id);
+    }
+    void this.flush();
+    return next;
+  }
+
+  /** My own name for someone (only on this phone); null or empty goes back to their name. */
+  async setNickname(accountId: string, nickname: string | null): Promise<void> {
+    const direct = await this.store.conversationWith(accountId);
+    const known = (await this.store.person(accountId)) ?? {
+      accountId,
+      displayName: direct?.title ?? "",
+      username: direct?.username ?? null,
+      about: "",
+      photo: null,
+      version: 0,
+      nickname: null,
+    };
+    const clean = nickname?.trim().slice(0, MAX_DISPLAY_NAME) || null;
+    await this.store.savePerson({ ...known, nickname: clean });
+    this.changed();
+  }
+
   // ---- backup ---------------------------------------------------------------
 
   /**
@@ -1069,7 +1195,8 @@ export class Messenger {
         });
       }
     }
-    const dump: BackupDump = { v: 1, at: this.now(), accountId: this.me.accountId, conversations, messages };
+    const people = await this.store.people();
+    const dump: BackupDump = { v: 1, at: this.now(), accountId: this.me.accountId, conversations, messages, people };
     const plain = this.files.tempUri();
     const encrypted = this.files.tempUri();
     try {
@@ -1124,6 +1251,12 @@ export class Messenger {
       const state = await this.engine.groupState(chat.id).catch(() => null);
       await this.store.saveConversation({ ...chat, unread: 0, rejoining: !chat.left && !state?.active });
       chats++;
+    }
+    for (const person of dump.people ?? []) {
+      const known = person?.accountId ? await this.store.person(person.accountId) : null;
+      if (person?.accountId && (!known || known.version < person.version || (!known.nickname && person.nickname))) {
+        await this.store.savePerson(known && known.version >= person.version ? { ...known, nickname: person.nickname } : person);
+      }
     }
     let restored = 0;
     for (const m of dump.messages) {
@@ -1283,7 +1416,8 @@ export class Messenger {
           await this.sendPayload(conversationId, { v: 1, type: "intro", accountId: latest.peerAccountId, displayName: latest.title, username: latest.username ?? "" }, null);
         }
         if (addedAccounts.some((a) => a !== this.me.accountId)) {
-          await this.sendPayload(conversationId, { v: 1, type: "intro", accountId: this.me.accountId, displayName: this.me.displayName, username: this.me.username }, null);
+          await this.sendPayload(conversationId, await this.introPayload(), null);
+          await this.shareProfile(conversationId);
         }
       }
     }

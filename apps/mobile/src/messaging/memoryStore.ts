@@ -1,10 +1,22 @@
-import { type Conversation, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
+import { type Conversation, type Message, type Person, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 /** An in-memory store with the same behaviour as the SQLite one; used by tests. */
 export class MemoryStore implements MessageStore {
   private readonly chats = new Map<string, Conversation>();
   private readonly msgs = new Map<string, Message>();
   private readonly queue = new Map<string, OutboxItem>();
+  private readonly persons = new Map<string, Person>();
+
+  async people() {
+    return [...this.persons.values()].map((p) => ({ ...p }));
+  }
+  async person(accountId: string) {
+    const person = this.persons.get(accountId);
+    return person ? { ...person } : null;
+  }
+  async savePerson(person: Person) {
+    this.persons.set(person.accountId, { ...person });
+  }
 
   async conversations() {
     return [...this.chats.values()].sort((a, b) => b.lastAt - a.lastAt).map((c) => ({ ...c, members: c.members.map((m) => ({ ...m })) }));
@@ -74,5 +86,6 @@ export class MemoryStore implements MessageStore {
     this.chats.clear();
     this.msgs.clear();
     this.queue.clear();
+    this.persons.clear();
   }
 }

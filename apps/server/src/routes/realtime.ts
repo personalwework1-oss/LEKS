@@ -267,6 +267,12 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
           return;
         }
 
+        case "update_profile": {
+          await store.setDisplayName(me.accountId, frame.displayName);
+          send({ type: "profile_updated", requestId: frame.requestId });
+          return;
+        }
+
         case "get_backup": {
           send({ type: "backup", requestId: frame.requestId, backup: await store.getBackup(me.accountId) });
           return;

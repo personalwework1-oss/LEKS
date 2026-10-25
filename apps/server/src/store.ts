@@ -409,6 +409,10 @@ export class Store {
 
   // ---- devices and backups ---------------------------------------------
 
+  async setDisplayName(accountId: string, displayName: string): Promise<void> {
+    await this.pool.query("UPDATE accounts SET display_name = $2 WHERE id = $1", [accountId, displayName]);
+  }
+
   async listDevices(accountId: string): Promise<{ deviceId: string; platform: string; lastSeenAt: number | null }[]> {
     const { rows } = await this.pool.query<{ id: string; platform: string; last_seen_at: Date | null }>(
       "SELECT id, platform, last_seen_at FROM devices WHERE account_id = $1 ORDER BY created_at",

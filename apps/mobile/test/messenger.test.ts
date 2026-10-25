@@ -159,6 +159,7 @@ class FakeServer {
   blobs = new Map<string, Buffer>();
   failUploads = false;
   removed = new Set<string>();
+  names = new Map<string, string>();
   backups = new Map<string, { blobId: string; wrappedKey: string; size: number; updatedAt: number }>();
   nudged: string[] = [];
   /** One clock for everyone, so message order is the order things happened. */
@@ -198,6 +199,10 @@ class Phone {
           const items = [...byDevice.values()];
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
+        }
+        if (frame.type === "update_profile") {
+          server.names.set(me.accountId, (frame as unknown as { displayName: string }).displayName);
+          return { type: "profile_updated", requestId: "r" };
         }
         if (frame.type === "set_backup") {
           const f = frame as unknown as { blobId: string; wrappedKey: string };
@@ -939,6 +944,58 @@ describe("backup", () => {
     const b2 = new Phone(server, { ...bob, deviceId: "dev-bob2" });
     await expect(b2.messenger.restore(unwrap)).rejects.toThrow("wrong password");
     expect(await b2.store.conversations()).toEqual([]);
+  });
+});
+
+describe("profiles", () => {
+  it("sends my name, about and photo to everyone I chat with; older updates are ignored", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await a.messenger.setProfile({ displayName: "Алиса К.", about: "На связи с 9 до 18", photo: "QUJDRA==" });
+    await a.messenger.flush();
+    await b.deliver();
+    const alicePerson = await b.messenger.person("acc-alice");
+    expect(alicePerson).toMatchObject({ displayName: "Алиса К.", about: "На связи с 9 до 18", photo: "QUJDRA==" });
+    expect((await b.store.conversation(chatId))?.title).toBe("Алиса К.");
+    expect(server.names.get("acc-alice")).toBe("Алиса К.");
+
+    await a.messenger.setProfile({ photo: null });
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.person("acc-alice"))?.photo).toBeNull();
+    expect((await b.messenger.person("acc-alice"))?.about).toBe("На связи с 9 до 18");
+  });
+
+  it("a new chat gets my profile right away, both ways", async () => {
+    const { a, b } = await twoPhones();
+    await a.messenger.setProfile({ about: "Алиса тут" });
+    await b.messenger.setProfile({ about: "Боб тут" });
+    await a.messenger.startChat(asUser(bob));
+    await a.messenger.flush();
+    await b.deliver();
+    await b.messenger.flush();
+    await a.deliver();
+    expect((await b.messenger.person("acc-alice"))?.about).toBe("Алиса тут");
+    expect((await a.messenger.person("acc-bob"))?.about).toBe("Боб тут");
+  });
+
+  it("my own name for a contact stays on my phone and survives their updates", async () => {
+    const { a, b } = await chatting();
+    await b.messenger.setNickname("acc-alice", "  Мама ");
+    expect((await b.messenger.person("acc-alice"))?.nickname).toBe("Мама");
+    await a.messenger.setProfile({ displayName: "Алиса", about: "новое" });
+    await a.messenger.flush();
+    await b.deliver();
+    expect(await b.messenger.person("acc-alice")).toMatchObject({ nickname: "Мама", about: "новое" });
+    await b.messenger.setNickname("acc-alice", "");
+    expect((await b.messenger.person("acc-alice"))?.nickname).toBeNull();
+  });
+
+  it("rejects malformed profiles", () => {
+    const bad = (value: object) => decodePayload(utf8Encode(JSON.stringify({ v: 1, type: "profile", displayName: "A", about: "", photo: null, version: 1, ...value })));
+    expect(bad({})).not.toBeNull();
+    expect(bad({ displayName: "  " })).toBeNull();
+    expect(bad({ about: "x".repeat(141) })).toBeNull();
+    expect(bad({ photo: "not base64!" })).toBeNull();
   });
 });
 

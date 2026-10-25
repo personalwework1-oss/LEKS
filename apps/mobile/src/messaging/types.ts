@@ -109,6 +109,29 @@ export interface Attachment {
   state: AttachmentState;
 }
 
+/**
+ * Someone I chat with (or me): what they share about themselves, plus the
+ * name I gave them, which stays on this phone.
+ */
+export interface Person {
+  accountId: string;
+  displayName: string;
+  username: string | null;
+  about: string;
+  /** Square JPEG, base64 (no data: prefix); null when there is no photo. */
+  photo: string | null;
+  /** When they last changed it (their clock); older updates are ignored. */
+  version: number;
+  /** My own name for them; never sent anywhere. */
+  nickname: string | null;
+}
+
+/** The longest "about" text. */
+export const MAX_ABOUT = 140;
+export const MAX_DISPLAY_NAME = 64;
+/** Profile photos travel inside the encrypted message, so they are kept small. */
+export const MAX_PHOTO_CHARS = 110_000;
+
 /** Something waiting to go to the server, kept until the server confirms it. */
 export interface OutboxItem {
   id: string;
@@ -142,6 +165,9 @@ export interface MessageStore {
   /** Incoming messages in the chat not yet marked read, oldest first. */
   unreadIncoming(conversationId: string): Promise<Message[]>;
   markRead(conversationId: string): Promise<void>;
+  people(): Promise<Person[]>;
+  person(accountId: string): Promise<Person | null>;
+  savePerson(person: Person): Promise<void>;
   enqueue(item: OutboxItem): Promise<void>;
   outbox(): Promise<OutboxItem[]>;
   dequeue(id: string): Promise<void>;
@@ -151,6 +177,7 @@ export interface MessageStore {
 /** What travels inside the encryption: never readable by the server. */
 export type Payload =
   | { v: 1; type: "intro"; accountId: string; displayName: string; username: string }
+  | { v: 1; type: "profile"; displayName: string; about: string; photo: string | null; version: number }
   | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string }
   | {
       v: 1;

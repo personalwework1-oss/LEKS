@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import { type Attachment, type ChatEvent, type Conversation, type GroupMember, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
+import { type Attachment, type ChatEvent, type Conversation, type GroupMember, type Message, type MessageStatus, type MessageStore, type OutboxItem, type Person, STATUS_RANK } from "./types";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS outbox (
   message_id TEXT,
   wake TEXT
 );
+CREATE TABLE IF NOT EXISTS people (
+  account_id TEXT PRIMARY KEY NOT NULL,
+  display_name TEXT NOT NULL,
+  username TEXT,
+  about TEXT NOT NULL DEFAULT '',
+  photo TEXT,
+  version INTEGER NOT NULL DEFAULT 0,
+  nickname TEXT
+);
 `;
 
 /** Columns added after the first test builds; applied once to older databases. */
@@ -59,7 +68,29 @@ const UPGRADES: string[] = [
   `ALTER TABLE outbox ADD COLUMN wake TEXT;`,
   `ALTER TABLE messages ADD COLUMN event TEXT;`,
   `ALTER TABLE conversations ADD COLUMN rejoining INTEGER NOT NULL DEFAULT 0;`,
+  // The people table comes from SCHEMA (CREATE TABLE IF NOT EXISTS).
+  `SELECT 1;`,
 ];
+
+interface PersonRow {
+  account_id: string;
+  display_name: string;
+  username: string | null;
+  about: string;
+  photo: string | null;
+  version: number;
+  nickname: string | null;
+}
+
+const toPerson = (r: PersonRow): Person => ({
+  accountId: r.account_id,
+  displayName: r.display_name,
+  username: r.username,
+  about: r.about,
+  photo: r.photo,
+  version: r.version,
+  nickname: r.nickname,
+});
 
 interface ConversationRow {
   id: string;
@@ -288,6 +319,24 @@ export class SqliteStore implements MessageStore {
     await this.db.runAsync("UPDATE conversations SET unread = 0 WHERE id = ?", [conversationId]);
   }
 
+  async people() {
+    return (await this.db.getAllAsync<PersonRow>("SELECT * FROM people")).map(toPerson);
+  }
+
+  async person(accountId: string) {
+    const row = await this.db.getFirstAsync<PersonRow>("SELECT * FROM people WHERE account_id = ?", [accountId]);
+    return row ? toPerson(row) : null;
+  }
+
+  async savePerson(p: Person) {
+    await this.db.runAsync(
+      `INSERT INTO people (account_id, display_name, username, about, photo, version, nickname) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET display_name = excluded.display_name, username = excluded.username, about = excluded.about,
+         photo = excluded.photo, version = excluded.version, nickname = excluded.nickname`,
+      [p.accountId, p.displayName, p.username, p.about, p.photo, p.version, p.nickname],
+    );
+  }
+
   async enqueue(item: OutboxItem) {
     await this.db.runAsync(
       "INSERT OR REPLACE INTO outbox (id, created_at, kind, recipients, payload, message_id, wake) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -313,6 +362,6 @@ export class SqliteStore implements MessageStore {
   }
 
   async clear() {
-    await this.db.execAsync("DELETE FROM outbox; DELETE FROM messages; DELETE FROM conversations;");
+    await this.db.execAsync("DELETE FROM outbox; DELETE FROM messages; DELETE FROM conversations; DELETE FROM people;");
   }
 }

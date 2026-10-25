@@ -55,6 +55,19 @@ describe.skipIf(!databaseUrl)("devices and backups", () => {
     bobClient.close();
   });
 
+  it("changes the name others find me by", async () => {
+    const alice = await register(app, "name_alice");
+    const bob = await register(app, "name_bob");
+    const aliceClient = await TestClient.signedIn(app, alice.session, alice.key);
+    const bobClient = await TestClient.signedIn(app, bob.session, bob.key);
+    aliceClient.send({ type: "update_profile", requestId: "p", displayName: "Алиса Новая" });
+    await aliceClient.next("profile_updated");
+    bobClient.send({ type: "lookup_user", requestId: "u", username: "name_alice" });
+    expect((await bobClient.next("user")).user?.displayName).toBe("Алиса Новая");
+    aliceClient.close();
+    bobClient.close();
+  });
+
   it("removes my own other device and signs it out, but nobody else's", async () => {
     const alice = await register(app, "rm_alice");
     const second = await secondDevice("rm_alice");
