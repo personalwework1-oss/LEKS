@@ -10,7 +10,7 @@ import {
   VideoTrack,
 } from "@livekit/react-native";
 import { ConnectionState, type LocalVideoTrack, RoomEvent, Track } from "livekit-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, PermissionsAndroid, Platform, Pressable, Vibration, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "@/components/Icon";
@@ -224,17 +224,28 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
   const [now, setNow] = useState(Date.now());
   const [others, setOthers] = useState(room.remoteParticipants.size);
   const [joinedAt, setJoinedAt] = useState<number | null>(null);
-  // Video calls start on the speaker; so do phones without an earpiece.
-  const [speaker, setSpeaker] = useState(state.video);
+  // Audio calls start on the earpiece, video calls on the speaker. Android sets
+  // its own route once the call is connected, so ours is applied after that.
+  const [speaker, setSpeakerState] = useState(state.video);
+  const speakerRef = useRef(state.video);
+  const setSpeaker = (on: boolean) => {
+    speakerRef.current = on;
+    setSpeakerState(on);
+  };
 
   useEffect(() => {
-    void (async () => {
-      const outputs = await AudioSession.getAudioOutputs();
-      const useSpeaker = state.video || (Platform.OS === "android" && !outputs.includes("earpiece"));
-      await route(useSpeaker);
-      setSpeaker(useSpeaker);
-    })().catch((e: unknown) => console.warn("audio route", e));
-  }, []);
+    if (connection !== ConnectionState.Connected) return;
+    let alive = true;
+    const apply = () => {
+      if (alive) void route(speakerRef.current).catch((e: unknown) => console.warn("audio route", e));
+    };
+    apply();
+    const again = setTimeout(apply, 1500);
+    return () => {
+      alive = false;
+      clearTimeout(again);
+    };
+  }, [connection]);
 
   async function route(on: boolean) {
     if (Platform.OS === "ios") await AudioSession.selectAudioOutput(on ? "force_speaker" : "default");
@@ -274,7 +285,8 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
     return () => clearInterval(timer);
   }, []);
 
-  const remote = tracks.filter((t) => isTrackReference(t) && !t.participant.isLocal);
+  // Video shows whenever someone has their camera on, also after switching an audio call to video.
+  const remote = tracks.filter((t) => isTrackReference(t) && !t.participant.isLocal && t.publication.isSubscribed && !t.publication.isMuted);
   const mine = tracks.find((t) => isTrackReference(t) && t.participant.isLocal);
   const live = connection === ConnectionState.Connected;
 
@@ -298,7 +310,7 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
   return (
     <View style={{ flex: 1 }}>
       <View style={{ flex: 1, gap: 6, paddingHorizontal: 6 }}>
-        {state.video && remote.length > 0 ? (
+        {remote.length > 0 ? (
           remote.map((t) =>
             isTrackReference(t) ? <VideoTrack key={t.participant.identity} trackRef={t} style={{ flex: 1, borderRadius: 18, overflow: "hidden" }} objectFit="cover" /> : null,
           )
@@ -310,7 +322,7 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
             </AppText>
           </View>
         )}
-        {state.video && mine && isTrackReference(mine) && isCameraEnabled ? (
+        {mine && isTrackReference(mine) && isCameraEnabled ? (
           <VideoTrack trackRef={mine} mirror={front} style={{ position: "absolute", right: 18, bottom: 18, width: 110, height: 160, borderRadius: 14, overflow: "hidden" }} objectFit="cover" />
         ) : null}
       </View>
@@ -346,6 +358,11 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
             void (async () => {
               if (!isCameraEnabled && !(await askForMedia(true))) return;
               await localParticipant.setCameraEnabled(!isCameraEnabled);
+              // Like other messengers: turning video on moves the sound to the speaker.
+              if (!isCameraEnabled && !speakerRef.current) {
+                await route(true);
+                setSpeaker(true);
+              }
             })().catch((e: unknown) => console.warn("camera", e))
           }
         />

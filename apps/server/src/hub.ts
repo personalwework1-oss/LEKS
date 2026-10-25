@@ -22,8 +22,12 @@ export interface DeviceConnection {
  * The signal carries no content. Real APNs and FCM senders are plugged in
  * when the app credentials exist; until then nothing is sent.
  */
+export type PushTestResult = "sent" | "no_token" | "not_configured" | "rejected" | "failed";
+
 export interface PushNotifier {
   notify(deviceId: string, reason: WakeReason): Promise<void>;
+  /** Sends a visible test notification now (no throttling) and says what happened. */
+  test?(deviceId: string): Promise<PushTestResult>;
 }
 
 export const noPush: PushNotifier = { notify: async () => undefined };

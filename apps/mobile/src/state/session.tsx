@@ -14,7 +14,7 @@ import { CallManager } from "../calls/CallManager";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
-import { registerForPush } from "../push";
+import { askForNotifications, registerForPush } from "../push";
 import { type LockSettings, NO_LOCK, secure, type StoredSession } from "../storage/secure";
 
 /**
@@ -118,6 +118,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setCalls(null);
     };
   }, [session, realtime]);
+
+  // Ask for notifications right after signing in, so pushes work from the first message.
+  useEffect(() => {
+    if (status === "ready") void askForNotifications().catch(() => undefined);
+  }, [status]);
 
   // Retry the outbox whenever the connection comes back.
   useEffect(() => {

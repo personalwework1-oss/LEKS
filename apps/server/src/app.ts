@@ -64,7 +64,8 @@ export async function buildApp({
   });
 
   const store = new Store(pool);
-  const hub = new Hub(store, typeof push === "function" ? push(store) : push, app.log);
+  const notifier = typeof push === "function" ? push(store) : push;
+  const hub = new Hub(store, notifier, app.log);
   app.decorate("store", store);
   app.decorate("hub", hub);
   app.decorate("pushStatus", "off");
@@ -83,7 +84,7 @@ export async function buildApp({
   });
 
   accountRoutes(app, store, hub);
-  realtimeRoutes(app, store, hub, calls);
+  realtimeRoutes(app, store, hub, calls, notifier);
   blobRoutes(app, store, blobs);
 
   if (purgeIntervalMs > 0) {

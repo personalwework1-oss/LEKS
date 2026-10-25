@@ -1,6 +1,6 @@
 import { createSign } from "node:crypto";
 import type { WakeReason } from "@leks/protocol";
-import type { PushNotifier } from "../hub.js";
+import type { PushNotifier, PushTestResult } from "../hub.js";
 import type { Store } from "../store.js";
 
 /** The parts of a Firebase service account key that are needed. */
@@ -87,6 +87,32 @@ export class FcmNotifier implements PushNotifier {
   /** Signs in to Firebase once, so a broken key shows up at startup rather than on the first message. */
   async check(): Promise<void> {
     await this.token();
+  }
+
+  async test(deviceId: string): Promise<PushTestResult> {
+    const target = await this.store.pushToken(deviceId);
+    if (!target || target.provider !== "fcm") return "no_token";
+    try {
+      const response = await this.fetchImpl(`https://fcm.googleapis.com/v1/projects/${this.account.project_id}/messages:send`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${await this.token()}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            token: target.token,
+            notification: { title: "LEKS", body: "Проверка уведомлений: всё работает" },
+            android: { priority: "HIGH", notification: { channel_id: "messages", tag: "test" } },
+          },
+        }),
+      });
+      if (response.ok) return "sent";
+      if (response.status === 404 || response.status === 400) {
+        await this.store.deletePushToken(deviceId);
+        return "rejected";
+      }
+      return "failed";
+    } catch {
+      return "failed";
+    }
   }
 
   async notify(deviceId: string, reason: WakeReason = "message"): Promise<void> {

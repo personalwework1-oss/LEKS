@@ -54,6 +54,17 @@ describe("Android push", () => {
     expect(sent[0].android.notification.channel_id).toBe("messages");
   });
 
+  it("sends a test notification and reports the outcome", async () => {
+    const ok = setup({ d1: { provider: "fcm", token: "t" } });
+    expect(await ok.notifier.test("d1")).toBe("sent");
+    expect(await ok.notifier.test("nobody")).toBe("no_token");
+    const gone = setup({ d1: { provider: "fcm", token: "old" } }, 404);
+    expect(await gone.notifier.test("d1")).toBe("rejected");
+    expect(gone.deleted).toEqual(["d1"]);
+    const down = setup({ d1: { provider: "fcm", token: "t" } }, 503);
+    expect(await down.notifier.test("d1")).toBe("failed");
+  });
+
   it("reuses the access token and sends at most one signal per device in a short time", async () => {
     const { notifier, calls, advance } = setup({ d1: { provider: "fcm", token: "t" } });
     await notifier.notify("d1");

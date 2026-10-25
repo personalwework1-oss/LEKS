@@ -233,6 +233,8 @@ export const ClientFrame = z.discriminatedUnion("type", [
    * encrypted with a key the server never sees.
    */
   z.object({ type: z.literal("call_token"), requestId: RequestId, room: Id }),
+  /** Sends a test notification to this device right away and reports what the push service said. */
+  z.object({ type: z.literal("test_push"), requestId: RequestId }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -304,6 +306,12 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("recovery_code"), requestId: RequestId, recoveryCode: z.string() }),
   z.object({ type: z.literal("recovery_code_deleted"), requestId: RequestId }),
   z.object({ type: z.literal("password_changed"), requestId: RequestId }),
+  z.object({
+    type: z.literal("push_test"),
+    requestId: RequestId,
+    /** sent: the push service accepted it; no_token: this device never registered; others: why not. */
+    result: z.enum(["sent", "no_token", "not_configured", "rejected", "failed"]),
+  }),
   z.object({
     type: z.literal("call_token"),
     requestId: RequestId,

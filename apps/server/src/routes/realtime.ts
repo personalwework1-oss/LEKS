@@ -11,7 +11,7 @@ import {
 } from "@leks/protocol";
 import type { FastifyInstance } from "fastify";
 import type { RawData, WebSocket } from "ws";
-import type { DeviceConnection, Hub } from "../hub.js";
+import type { DeviceConnection, Hub, PushNotifier } from "../hub.js";
 import {
   hashPassword,
   hashRecoveryCode,
@@ -34,7 +34,7 @@ type State =
   | { phase: "greeted"; challenge: Buffer }
   | { phase: "authenticated"; connection: DeviceConnection };
 
-export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, calls: CallConfig | null = null) {
+export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, calls: CallConfig | null = null, push?: PushNotifier) {
   app.get("/v1/ws", { websocket: true }, (socket: WebSocket) => {
     let state: State = { phase: "new" };
     let tokens = RATE_BURST;
@@ -230,6 +230,13 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
             throw err;
           }
           send({ type: "upload_ready", requestId: frame.requestId, blobId, token });
+          return;
+        }
+
+        case "test_push": {
+          const result = push?.test ? await push.test(me.deviceId) : "not_configured";
+          app.log.info({ result }, "test push");
+          send({ type: "push_test", requestId: frame.requestId, result });
           return;
         }
 

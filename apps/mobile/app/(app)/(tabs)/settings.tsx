@@ -6,14 +6,39 @@ import { AppText, Avatar } from "@/components/ui";
 import { APP_VERSION } from "@/config";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
+import { isXiaomi, onPushState, openAppSettings, openAutostartSettings, pushState, type PushState, testPush } from "@/push";
 
 export default function Settings() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
-  const { session, lock, biometricLabel, signOut } = useSession();
+  const { session, lock, biometricLabel, signOut, realtime } = useSession();
+  const [push, setPush] = useState<PushState>(pushState());
+  const [testing, setTesting] = useState(false);
+  useEffect(() => onPushState(setPush), []);
   if (!session) return null;
 
   const lockValue = lock.method === "none" ? "Выкл." : lock.method === "biometric" ? (biometricLabel ?? "Биометрия") : "Код-пароль";
+
+  async function runPushTest() {
+    if (!realtime) return;
+    setTesting(true);
+    try {
+      const result = await testPush(realtime);
+      const text = {
+        sent: "Отправлено. Если уведомление «Проверка уведомлений» не пришло в течение минуты — его блокирует телефон: проверьте автозапуск и ограничения батареи для LEKS.",
+        no_token: "Телефон не выдал адрес для уведомлений (нужны сервисы Google).",
+        denied: "Уведомления запрещены. Разрешите их в настройках телефона.",
+        not_configured: "На сервере не настроены уведомления.",
+        rejected: "Firebase не принял адрес этого телефона. Откройте приложение заново — адрес обновится.",
+        failed: "Сервер не смог связаться с Firebase. Попробуйте позже.",
+      }[result];
+      Alert.alert("Проверка уведомлений", text);
+    } catch {
+      Alert.alert("Проверка уведомлений", "Нет связи с сервером.");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   function confirmSignOut() {
     Alert.alert(
@@ -44,6 +69,32 @@ export default function Settings() {
         </View>
       </View>
 
+      {push.state === "unsupported" ? null : (
+        <SettingsGroup
+          title="Уведомления"
+          rows={[
+            {
+              title: "Состояние",
+              value: { pending: "Проверяется…", registered: "Включены", denied: "Нет разрешения", no_token: "Не подключены" }[push.state],
+              onPress: push.state === "denied" ? () => void openAppSettings() : undefined,
+            },
+            {
+              title: testing ? "Отправляем…" : "Проверить уведомления",
+              onPress: realtime && !testing ? () => void runPushTest() : undefined,
+            },
+            ...(isXiaomi() ? [{ title: "Автозапуск (Xiaomi)", value: "Включить", onPress: () => void openAutostartSettings() }] : []),
+          ]}
+          footer={
+            <AppText variant="caption" muted style={{ marginHorizontal: 4, marginTop: 6 }}>
+              {push.state === "no_token"
+                ? `Телефон не выдал адрес для уведомлений: ${push.error}`
+                : isXiaomi()
+                  ? "На Xiaomi уведомления закрытого приложения приходят, только если для LEKS включён «Автозапуск» и в «Контроле активности» выбрано «Нет ограничений»."
+                  : "В уведомлении нет текста и имени отправителя: сервер их не знает."}
+            </AppText>
+          }
+        />
+      )}
       <SettingsGroup title="Приватность" rows={[{ title: "Блокировка приложения", value: lockValue, onPress: () => router.push("/settings/lock") }]} />
       <SettingsGroup
         title="Безопасность"
