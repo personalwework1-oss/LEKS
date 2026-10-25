@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import { type Attachment, type Conversation, type GroupMember, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
+import { type Attachment, type CallEvent, type Conversation, type GroupMember, type Message, type MessageStatus, type MessageStore, type OutboxItem, STATUS_RANK } from "./types";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS messages (
   edited_at INTEGER,
   deleted INTEGER NOT NULL DEFAULT 0,
   reactions TEXT NOT NULL DEFAULT '{}',
-  attachment TEXT
+  attachment TEXT,
+  event TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation_id, sent_at);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -55,6 +56,7 @@ const UPGRADES: string[] = [
    ALTER TABLE conversations ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE conversations ADD COLUMN left_group INTEGER NOT NULL DEFAULT 0;`,
   `ALTER TABLE outbox ADD COLUMN wake TEXT;`,
+  `ALTER TABLE messages ADD COLUMN event TEXT;`,
 ];
 
 interface ConversationRow {
@@ -84,6 +86,7 @@ interface MessageRow {
   deleted: number;
   reactions: string;
   attachment: string | null;
+  event: string | null;
 }
 
 interface OutboxRow {
@@ -132,6 +135,7 @@ const toMessage = (r: MessageRow): Message => ({
   deleted: r.deleted === 1,
   reactions: parseReactions(r.reactions),
   attachment: parseAttachment(r.attachment),
+  event: r.event ? (JSON.parse(r.event) as CallEvent) : null,
 });
 
 function parseAttachment(json: string | null): Attachment | null {
@@ -219,8 +223,8 @@ export class SqliteStore implements MessageStore {
 
   async addMessage(m: Message) {
     const result = await this.db.runAsync(
-      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions, attachment)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions, attachment, event)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         m.id,
         m.conversationId,
@@ -234,6 +238,7 @@ export class SqliteStore implements MessageStore {
         m.deleted ? 1 : 0,
         JSON.stringify(m.reactions),
         m.attachment ? JSON.stringify(m.attachment) : null,
+        m.event ? JSON.stringify(m.event) : null,
       ],
     );
     return result.changes > 0;

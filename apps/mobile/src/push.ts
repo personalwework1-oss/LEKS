@@ -1,5 +1,5 @@
 import * as Notifications from "expo-notifications";
-import { Linking, Platform } from "react-native";
+import { AppState, Linking, Platform } from "react-native";
 import type { Realtime } from "./api/realtime";
 
 // While the app is open, messages show up in it, so no banners on top;
@@ -89,6 +89,15 @@ export async function testPush(realtime: Realtime): Promise<"sent" | "no_token" 
   if (lastState.state !== "registered") return "no_token";
   const answer = await realtime.request({ type: "test_push" }, "push_test");
   return answer.result;
+}
+
+/** Shown when something arrives while the app is in the background but still connected. */
+export async function notifyLocally(kind: "message" | "call"): Promise<void> {
+  if (AppState.currentState === "active") return;
+  await Notifications.scheduleNotificationAsync({
+    content: { title: "LEKS", body: kind === "call" ? "Входящий звонок" : "Новое сообщение", ...(Platform.OS === "android" ? {} : {}) },
+    trigger: Platform.OS === "android" ? { channelId: kind === "call" ? "calls" : "messages" } : null,
+  });
 }
 
 export const openAppSettings = () => Linking.openSettings();

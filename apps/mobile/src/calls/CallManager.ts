@@ -36,6 +36,17 @@ export interface CallDeps {
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(timer: unknown): void;
+  /** Told about every call that ends, for the note in the chat. */
+  onEnded?(call: EndedCall): void;
+}
+
+export interface EndedCall {
+  conversationId: string;
+  outgoing: boolean;
+  video: boolean;
+  reason: EndReason;
+  /** Talking time in ms; 0 if they never picked up. */
+  duration: number;
 }
 
 const IDLE: CallState = {
@@ -85,6 +96,16 @@ export class CallManager {
 
   private finish(reason: EndReason) {
     this.stopRinging();
+    const { conversationId, from, video, startedAt } = this.current;
+    if (conversationId && this.current.phase !== "idle") {
+      this.deps.onEnded?.({
+        conversationId,
+        outgoing: from === null,
+        video,
+        reason,
+        duration: startedAt ? this.deps.now() - startedAt : 0,
+      });
+    }
     this.current = { ...IDLE, ended: reason };
     for (const listener of this.listeners) listener(this.current);
   }

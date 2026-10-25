@@ -10,7 +10,7 @@ import { AppText, Avatar, IconButton } from "@/components/ui";
 import { pickDocuments, pickFromGallery } from "@/features/attachments";
 import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
-import { MessengerError, previewOf } from "@/messaging/messenger";
+import { callText, MessengerError, previewOf } from "@/messaging/messenger";
 import { useConversation, useMessages, useTyping } from "@/messaging/hooks";
 import { type Message, REACTIONS } from "@/messaging/types";
 import { useSession } from "@/state/session";
@@ -184,6 +184,8 @@ export default function Chat() {
                 {item.label}
               </AppText>
             </View>
+          ) : item.message.event ? (
+            <CallNote message={item.message} onCall={(video) => void calls?.start(id, video)} />
           ) : (
             <Bubble
               message={item.message}
@@ -609,5 +611,38 @@ function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: (
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+/** "Пропущенный звонок · 12:40" in the middle of the chat; tapping calls back. */
+function CallNote({ message, onCall }: { message: Message; onCall: (video: boolean) => void }) {
+  const p = usePalette();
+  const event = message.event!;
+  const missed = !message.outgoing && (event.outcome === "missed" || event.outcome === "no_answer" || event.outcome === "cancelled");
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${callText(message)}, ${clockTime(message.sentAt)}. Нажмите, чтобы перезвонить`}
+      onPress={() => onCall(event.video)}
+      style={({ pressed }) => ({
+        alignSelf: "center",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 7,
+        borderRadius: 16,
+        marginVertical: 4,
+        backgroundColor: pressed ? p.surfaceMuted : p.surface,
+      })}
+    >
+      <Icon name={event.video ? "video" : "phone"} size={16} color={missed ? p.danger : p.accentText} strokeWidth={2.2} />
+      <AppText variant="caption" color={missed ? p.danger : p.text} style={{ fontFamily: fonts.semibold }}>
+        {callText(message)}
+      </AppText>
+      <AppText variant="caption" muted>
+        {clockTime(message.sentAt)}
+      </AppText>
+    </Pressable>
   );
 }

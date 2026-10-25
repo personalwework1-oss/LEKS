@@ -1,8 +1,9 @@
-import { CallManager, RING_MS } from "../src/calls/CallManager";
+import { CallManager, type EndedCall, RING_MS } from "../src/calls/CallManager";
 import type { Payload } from "../src/messaging/types";
 
 function setup(myAccountId = "me") {
   const sent: { conversationId: string; payload: Payload }[] = [];
+  const ended: EndedCall[] = [];
   const timers: { fn: () => void; at: number; cleared: boolean }[] = [];
   let clock = 1_000_000;
   let failToken = false;
@@ -22,6 +23,7 @@ function setup(myAccountId = "me") {
       return timer;
     },
     clearTimer: (timer) => void ((timer as { cleared: boolean }).cleared = true),
+    onEnded: (call) => void ended.push(call),
   });
   const advance = (ms: number) => {
     clock += ms;
@@ -30,7 +32,7 @@ function setup(myAccountId = "me") {
       t.fn();
     }
   };
-  return { manager, sent, advance, fail: () => (failToken = true), now: () => clock };
+  return { manager, sent, ended, advance, fail: () => (failToken = true), now: () => clock };
 }
 
 describe("calls", () => {
@@ -109,6 +111,19 @@ describe("calls", () => {
     expect(manager.state.phase).toBe("outgoing");
     manager.receive({ type: "decline", conversationId: "chat", from: "bob", callId: "call-1" });
     expect(manager.state).toMatchObject({ phase: "idle", ended: "declined" });
+  });
+
+  it("reports how each call ended, for the note in the chat", async () => {
+    const { manager, ended, advance, now } = setup();
+    await manager.start("chat", false);
+    manager.receive({ type: "accept", conversationId: "chat", from: "bob", callId: "call-1" });
+    advance(65_000);
+    await manager.hangUp();
+    expect(ended.at(-1)).toEqual({ conversationId: "chat", outgoing: true, video: false, reason: "hung_up", duration: 65_000 });
+
+    manager.receive({ type: "invite", conversationId: "chat", from: "bob", callId: "in", video: true, key: "x", sentAt: now() });
+    advance(RING_MS + 1);
+    expect(ended.at(-1)).toMatchObject({ outgoing: false, video: true, reason: "missed", duration: 0 });
   });
 
   it("fails cleanly when calls are not available on the server", async () => {

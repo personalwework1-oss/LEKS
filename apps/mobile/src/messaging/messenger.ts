@@ -5,6 +5,7 @@ import type { FileIO } from "./files";
 import {
   type Attachment,
   type AttachmentKind,
+  type CallOutcome,
   type Conversation,
   type GroupMember,
   type Message,
@@ -168,8 +169,31 @@ const sortMembers = (members: GroupMember[]) =>
   [...members].sort((a, b) => (a.role === b.role ? a.displayName.localeCompare(b.displayName, "ru") : a.role === "admin" ? -1 : 1));
 
 /** What the chat list shows for a message. */
+const CALL_TEXT: Record<CallOutcome, [string, string]> = {
+  // [mine, theirs]
+  ended: ["Исходящий звонок", "Входящий звонок"],
+  missed: ["Отменённый звонок", "Пропущенный звонок"],
+  declined: ["Звонок отклонён", "Вы отклонили звонок"],
+  no_answer: ["Нет ответа", "Пропущенный звонок"],
+  cancelled: ["Отменённый звонок", "Пропущенный звонок"],
+  failed: ["Звонок не удался", "Звонок не удался"],
+};
+
+/** "Пропущенный звонок", "Исходящий видеозвонок · 2:15" and so on. */
+export function callText(m: Message): string {
+  const event = m.event!;
+  let text = CALL_TEXT[event.outcome][m.outgoing ? 0 : 1];
+  if (event.video) text = text.replace("звонок", "видеозвонок");
+  if (event.outcome === "ended" && event.duration > 0) {
+    const s = Math.round(event.duration / 1000);
+    text += ` · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  return text;
+}
+
 export function previewOf(m: Message | null): string | null {
   if (!m) return null;
+  if (m.event) return `📞 ${callText(m)}`;
   if (m.deleted) return "Сообщение удалено";
   if (m.attachment && !m.text) {
     const kind = m.attachment.kind;
@@ -207,10 +231,46 @@ export class Messenger {
   /** Attachments being uploaded or downloaded right now (message ids). */
   private readonly transfers = new Set<string>();
   private callListener: ((signal: CallSignal) => void) | null = null;
+  private arrivalListener: ((conversationId: string) => void) | null = null;
+
+  /** Told when a message from someone else arrives (to notify if the app is in the background). */
+  onArrival(listener: ((conversationId: string) => void) | null): void {
+    this.arrivalListener = listener;
+  }
 
   /** The call screen listens here for invites, answers and hang-ups. */
   onCall(listener: ((signal: CallSignal) => void) | null): void {
     this.callListener = listener;
+  }
+
+  /** Notes a call in the chat, on this phone only. A missed call counts as unread. */
+  async logCall(conversationId: string, outgoing: boolean, video: boolean, outcome: CallOutcome, duration: number): Promise<void> {
+    const conversation = await this.store.conversation(conversationId);
+    if (!conversation) return;
+    const message: Message = {
+      id: this.uuid(),
+      conversationId,
+      senderAccountId: outgoing ? this.me.accountId : conversation.peerAccountId,
+      outgoing,
+      text: "",
+      sentAt: this.now(),
+      status: outgoing ? "sent" : "read",
+      replyTo: null,
+      editedAt: null,
+      deleted: false,
+      reactions: {},
+      attachment: null,
+      event: { type: "call", video, outcome, duration },
+    };
+    await this.store.addMessage(message);
+    const missed = !outgoing && outcome !== "ended" && outcome !== "declined";
+    await this.store.saveConversation({
+      ...conversation,
+      lastText: previewOf(message),
+      lastAt: Math.max(conversation.lastAt, message.sentAt),
+      unread: conversation.unread + (missed ? 1 : 0),
+    });
+    this.changed();
   }
 
   /** Sends a call signal into the chat (through the outbox, so it keeps its place in line). */
@@ -401,6 +461,7 @@ export class Messenger {
           lastAt: Math.max(conversation.lastAt, payload.sentAt),
           unread: conversation.unread + (mine ? 0 : 1),
         });
+        if (!mine) this.arrivalListener?.(conversation.id);
         return mine ? null : { conversationId: conversation.id, id: payload.id };
       }
 
@@ -442,6 +503,7 @@ export class Messenger {
           unread: conversation.unread + (mine ? 0 : 1),
         });
         if ((payload.kind === "image" || payload.kind === "voice") && payload.size <= AUTO_DOWNLOAD_BYTES) void this.download(message.id);
+        if (!mine) this.arrivalListener?.(conversation.id);
         return mine ? null : { conversationId: conversation.id, id: payload.id };
       }
 

@@ -14,7 +14,7 @@ import { CallManager } from "../calls/CallManager";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
 import { checkPasscode, withPasscode } from "../lock/passcode";
-import { askForNotifications, registerForPush } from "../push";
+import { askForNotifications, notifyLocally, registerForPush } from "../push";
 import { type LockSettings, NO_LOCK, secure, type StoredSession } from "../storage/secure";
 
 /**
@@ -107,8 +107,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         now: Date.now,
         setTimer: (fn, ms) => setTimeout(fn, ms),
         clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+        onEnded: (call) => {
+          if (call.reason === "answered_elsewhere") return;
+          const outcome =
+            call.duration > 0
+              ? "ended"
+              : call.reason === "no_answer"
+                ? "no_answer"
+                : call.reason === "declined" || call.reason === "busy"
+                  ? "declined"
+                  : call.reason === "failed"
+                    ? "failed"
+                    : call.outgoing
+                      ? "cancelled"
+                      : "missed";
+          void created.logCall(call.conversationId, call.outgoing, call.video, outcome, call.duration).catch(() => undefined);
+        },
       });
-      created.onCall((signal) => callManager.receive(signal));
+      created.onCall((signal) => {
+        if (signal.type === "invite") void notifyLocally("call").catch(() => undefined);
+        callManager.receive(signal);
+      });
+      created.onArrival(() => void notifyLocally("message").catch(() => undefined));
       setMessenger(created);
       setCalls(callManager);
     })().catch((error) => console.warn("encryption core failed to open", error));
@@ -173,6 +193,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setStatus(savedLock.method === "none" ? "ready" : "locked");
     })().catch(() => setStatus("signedOut"));
   }, [startRealtime]);
+
+  // In the background the app lets go of the server, so new messages come as pushes
+  // (Android may keep a backgrounded app connected for a while, and then nothing would show).
+  // A running call keeps the connection; it needs it to hang up properly.
+  useEffect(() => {
+    if (!realtime) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const subscription = AppState.addEventListener("change", (next) => {
+      clearTimeout(timer);
+      if (next === "active") {
+        realtime.start();
+      } else if (next === "background") {
+        timer = setTimeout(() => {
+          if ((calls?.state.phase ?? "idle") === "idle") realtime.stop();
+        }, 3000);
+      }
+    });
+    return () => {
+      clearTimeout(timer);
+      subscription.remove();
+    };
+  }, [realtime, calls]);
 
   // Lock again whenever the app goes to the background.
   useEffect(() => {

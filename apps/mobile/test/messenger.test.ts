@@ -7,6 +7,7 @@ import { type Engine, type Received, utf8Decode, utf8Encode } from "../src/crypt
 import { type FileIO, safeName } from "../src/messaging/files";
 import { MemoryStore } from "../src/messaging/memoryStore";
 import {
+  callText,
   decodePayload,
   identityOf,
   type Me,
@@ -389,6 +390,15 @@ describe("message features", () => {
     await a.messenger.sendCallSignal(chatId, { v: 1, type: "call_invite", callId: "c1", video: false, key: "k", sentAt: 1 });
     await settle();
     expect(server.wakes.at(-1)).toBe("call");
+  });
+
+  it("notes calls in the chat; a missed one counts as unread", async () => {
+    const { b, chatId } = await chatting();
+    await b.messenger.logCall(chatId, false, false, "missed", 0);
+    await b.messenger.logCall(chatId, true, true, "ended", 135_000);
+    const notes = await b.messenger.messages(chatId);
+    expect(notes.map((m) => callText(m))).toEqual(["Пропущенный звонок", "Исходящий видеозвонок · 2:15"]);
+    expect(await b.messenger.conversation(chatId)).toMatchObject({ unread: 1, lastText: "📞 Исходящий видеозвонок · 2:15" });
   });
 
   it("answers a message with a quote", async () => {

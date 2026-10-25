@@ -57,6 +57,18 @@ export interface Message {
   reactions: Record<string, string>;
   /** A photo or file; `text` is then its caption. */
   attachment: Attachment | null;
+  /** A note in the chat about a call (kept only on this phone). */
+  event?: CallEvent | null;
+}
+
+export type CallOutcome = "ended" | "missed" | "declined" | "no_answer" | "cancelled" | "failed";
+
+export interface CallEvent {
+  type: "call";
+  video: boolean;
+  outcome: CallOutcome;
+  /** How long the conversation lasted, in ms (ended calls). */
+  duration: number;
 }
 
 export type AttachmentKind = "image" | "video" | "file" | "voice";
