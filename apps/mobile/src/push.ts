@@ -2,9 +2,13 @@ import * as Notifications from "expo-notifications";
 import { Linking, Platform } from "react-native";
 import type { Realtime } from "./api/realtime";
 
-// While the app is open, messages show up in it; no banners on top.
+// While the app is open, messages show up in it, so no banners on top;
+// the test from Settings is the exception, so the person can see it work.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({ shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false }),
+  handleNotification: async (notification) => {
+    const test = (notification.request.content.data as { leks?: string } | null)?.leks === "test";
+    return { shouldShowBanner: test, shouldShowList: test, shouldPlaySound: test, shouldSetBadge: false };
+  },
 });
 
 export type PushState =

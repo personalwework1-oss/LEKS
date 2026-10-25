@@ -100,6 +100,7 @@ export class FcmNotifier implements PushNotifier {
           message: {
             token: target.token,
             notification: { title: "LEKS", body: "Проверка уведомлений: всё работает" },
+            data: { leks: "test" },
             android: { priority: "HIGH", notification: { channel_id: "messages", tag: "test" } },
           },
         }),
