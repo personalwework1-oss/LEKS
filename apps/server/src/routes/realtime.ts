@@ -234,6 +234,39 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
           return;
         }
 
+        case "list_devices": {
+          const devices = await store.listDevices(frame.accountId);
+          // When others were last seen is nobody else's business: only the ids for other accounts.
+          const own = frame.accountId === me.accountId;
+          send({
+            type: "devices",
+            requestId: frame.requestId,
+            accountId: frame.accountId,
+            devices: own ? devices : devices.map((d) => ({ deviceId: d.deviceId, platform: "", lastSeenAt: null })),
+          });
+          return;
+        }
+
+        case "remove_device": {
+          if (frame.deviceId === me.deviceId || !(await store.removeDevice(me.accountId, frame.deviceId))) {
+            return error("not_found", frame.requestId);
+          }
+          hub.disconnectDevices([frame.deviceId]);
+          send({ type: "device_removed", requestId: frame.requestId });
+          return;
+        }
+
+        case "set_backup": {
+          if (!(await store.setBackup(me.accountId, me.deviceId, frame.blobId, frame.wrappedKey))) return error("not_found", frame.requestId);
+          send({ type: "backup_saved", requestId: frame.requestId });
+          return;
+        }
+
+        case "get_backup": {
+          send({ type: "backup", requestId: frame.requestId, backup: await store.getBackup(me.accountId) });
+          return;
+        }
+
         case "test_push": {
           const result = push?.test ? await push.test(me.deviceId) : "not_configured";
           app.log.info({ result }, "test push");

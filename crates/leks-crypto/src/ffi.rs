@@ -102,6 +102,15 @@ enum Request {
         output: String,
         key: String,
     },
+    /// Small values with a given key (the backup key, wrapped by a password-derived key).
+    Seal {
+        key: String,
+        plaintext: String,
+    },
+    Unseal {
+        key: String,
+        sealed: String,
+    },
 }
 
 #[derive(Debug)]
@@ -170,6 +179,16 @@ fn handle(request: &[u8]) -> Result<Value, Failure> {
             file_crypto::decrypt_file(Path::new(&input), Path::new(&output), &unb64(&key)?)
                 .map_err(file_failure)?;
             return Ok(json!({}));
+        }
+        Request::Seal { key, plaintext } => {
+            let sealed =
+                file_crypto::seal(&unb64(&key)?, &unb64(&plaintext)?).map_err(file_failure)?;
+            return Ok(json!({ "sealed": b64(&sealed) }));
+        }
+        Request::Unseal { key, sealed } => {
+            let plaintext =
+                file_crypto::open(&unb64(&key)?, &unb64(&sealed)?).map_err(file_failure)?;
+            return Ok(json!({ "plaintext": b64(&plaintext) }));
         }
         _ => {}
     }
@@ -314,7 +333,9 @@ fn handle_open(client: &mut Client, request: Request) -> Result<(Value, bool), F
         Request::Open { .. }
         | Request::Reset { .. }
         | Request::EncryptFile { .. }
-        | Request::DecryptFile { .. } => unreachable!("handled before"),
+        | Request::DecryptFile { .. }
+        | Request::Seal { .. }
+        | Request::Unseal { .. } => unreachable!("handled before"),
     })
 }
 

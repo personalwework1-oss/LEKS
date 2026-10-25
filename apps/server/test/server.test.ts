@@ -71,6 +71,7 @@ describe.skipIf(!databaseUrl)("server basics", () => {
       "002_auth_keys_and_delivery.sql",
       "003_passwords.sql",
       "004_blobs.sql",
+      "005_backups_and_device_cleanup.sql",
     ]);
     expect(await migrate(pool)).toEqual([]);
   });

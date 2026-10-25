@@ -1,7 +1,7 @@
 import websocket from "@fastify/websocket";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BLOB_RETENTION_DAYS, MAX_FRAME_BYTES, MESSAGE_RETENTION_DAYS, PROTOCOL_VERSION } from "@leks/protocol";
+import { BLOB_RETENTION_DAYS, DEVICE_RETENTION_DAYS, MAX_FRAME_BYTES, MESSAGE_RETENTION_DAYS, PROTOCOL_VERSION } from "@leks/protocol";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import type pg from "pg";
 import { BlobStorage } from "./blobs.js";
@@ -100,6 +100,13 @@ export async function buildApp({
           if (ids.length > 0) app.log.info({ count: ids.length }, "expired files deleted");
         })
         .catch((err: unknown) => app.log.error({ err }, "file purge failed"));
+      store
+        .purgeDevices(DEVICE_RETENTION_DAYS)
+        .then((ids) => {
+          hub.disconnectDevices(ids);
+          if (ids.length > 0) app.log.info({ count: ids.length }, "unused devices deleted");
+        })
+        .catch((err: unknown) => app.log.error({ err }, "device purge failed"));
     }, purgeIntervalMs);
     timer.unref();
     app.addHook("onClose", async () => clearInterval(timer));

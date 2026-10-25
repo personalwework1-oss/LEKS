@@ -1,6 +1,6 @@
 use std::fs;
 
-use leks_crypto::file_crypto::{decrypt_file, encrypt_file, FileError, KEY_LEN};
+use leks_crypto::file_crypto::{decrypt_file, encrypt_file, open, seal, FileError, KEY_LEN};
 
 /// Sizes around the 64 KiB chunk boundary, plus empty and multi-chunk files.
 const SIZES: &[usize] = &[0, 1, 1000, 65_535, 65_536, 65_537, 131_072, 300_001];
@@ -123,4 +123,28 @@ fn works_through_the_app_interface() {
         serde_json::json!({ "op": "decrypt_file", "input": plain, "output": opened, "key": key }),
     );
     assert_eq!(answer["error"]["code"], "rejected");
+}
+
+#[test]
+fn seals_small_values_with_a_given_key() {
+    let key = [9u8; KEY_LEN];
+    let sealed = seal(&key, b"backup key").unwrap();
+    assert_eq!(open(&key, &sealed).unwrap(), b"backup key");
+    assert_ne!(
+        seal(&key, b"backup key").unwrap(),
+        sealed,
+        "a fresh nonce every time"
+    );
+    assert!(matches!(
+        open(&[8u8; KEY_LEN], &sealed),
+        Err(FileError::Rejected)
+    ));
+    let mut tampered = sealed.clone();
+    tampered[20] ^= 1;
+    assert!(matches!(open(&key, &tampered), Err(FileError::Rejected)));
+    assert!(matches!(
+        open(&key, &sealed[..10]),
+        Err(FileError::Rejected)
+    ));
+    assert!(matches!(seal(&[1, 2], b"x"), Err(FileError::BadKey)));
 }

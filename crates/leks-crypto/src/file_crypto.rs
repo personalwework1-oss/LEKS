@@ -164,3 +164,35 @@ pub fn decrypt_file(input: &Path, output: &Path, key: &[u8]) -> Result<(), FileE
         }
     })
 }
+
+/// Encrypts a small value (such as a key) with a given 256-bit key: nonce | ciphertext+tag.
+pub fn seal(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, FileError> {
+    use aes_gcm::aead::Aead;
+    if key.len() != KEY_LEN {
+        return Err(FileError::BadKey);
+    }
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let sealed = cipher
+        .encrypt(GenericArray::from_slice(&nonce), plaintext)
+        .map_err(|_| FileError::Rejected)?;
+    let mut out = nonce.to_vec();
+    out.extend_from_slice(&sealed);
+    Ok(out)
+}
+
+/// Opens what [`seal`] produced; fails on a wrong key or any change.
+pub fn open(key: &[u8], sealed: &[u8]) -> Result<Vec<u8>, FileError> {
+    use aes_gcm::aead::Aead;
+    if key.len() != KEY_LEN {
+        return Err(FileError::BadKey);
+    }
+    if sealed.len() < 12 + TAG {
+        return Err(FileError::Rejected);
+    }
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    cipher
+        .decrypt(GenericArray::from_slice(&sealed[..12]), &sealed[12..])
+        .map_err(|_| FileError::Rejected)
+}

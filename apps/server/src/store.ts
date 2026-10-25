@@ -395,16 +395,74 @@ export class Store {
     return (rowCount ?? 0) > 0;
   }
 
-  /** Forgets old files and unfinished uploads; returns their ids so the files can be removed. */
+  /** Forgets old files and unfinished uploads (never a current backup); returns their ids so the files can be removed. */
   async purgeBlobs(retentionDays: number): Promise<string[]> {
     const { rows } = await this.pool.query<{ id: string }>(
       `DELETE FROM blobs
-       WHERE created_at < now() - make_interval(days => $1)
-          OR (uploaded_at IS NULL AND token_expires_at < now() - interval '1 hour')
+       WHERE NOT kept AND (created_at < now() - make_interval(days => $1)
+          OR (uploaded_at IS NULL AND token_expires_at < now() - interval '1 hour'))
        RETURNING id`,
       [retentionDays],
     );
     return rows.map((row) => row.id);
+  }
+
+  // ---- devices and backups ---------------------------------------------
+
+  async listDevices(accountId: string): Promise<{ deviceId: string; platform: string; lastSeenAt: number | null }[]> {
+    const { rows } = await this.pool.query<{ id: string; platform: string; last_seen_at: Date | null }>(
+      "SELECT id, platform, last_seen_at FROM devices WHERE account_id = $1 ORDER BY created_at",
+      [accountId],
+    );
+    return rows.map((r) => ({ deviceId: r.id, platform: r.platform, lastSeenAt: r.last_seen_at ? r.last_seen_at.getTime() : null }));
+  }
+
+  /** Deletes a device of the account (with its queue, keys and push address); false if it is not theirs. */
+  async removeDevice(accountId: string, deviceId: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query("DELETE FROM devices WHERE id = $1 AND account_id = $2", [deviceId, accountId]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Deletes devices not seen for this many days; returns their ids. */
+  async purgeDevices(retentionDays: number): Promise<string[]> {
+    const { rows } = await this.pool.query<{ id: string }>(
+      `DELETE FROM devices WHERE COALESCE(last_seen_at, created_at) < now() - make_interval(days => $1) RETURNING id`,
+      [retentionDays],
+    );
+    return rows.map((r) => r.id);
+  }
+
+  /** Makes an uploaded blob the account's backup; the previous one is released for deletion. False if the blob is not usable. */
+  async setBackup(accountId: string, deviceId: string, blobId: string, wrappedKey: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const blob = await client.query<{ size: string }>(
+        "SELECT size FROM blobs WHERE id = $1 AND uploader_device_id = $2 AND uploaded_at IS NOT NULL",
+        [blobId, deviceId],
+      );
+      if (blob.rows.length === 0) return false;
+      const previous = await client.query<{ blob_id: string }>("SELECT blob_id FROM backups WHERE account_id = $1", [accountId]);
+      const old = previous.rows[0]?.blob_id;
+      if (old && old !== blobId) {
+        // Released: deleted by the next clean-up.
+        await client.query("UPDATE blobs SET kept = false, created_at = now() - interval '365 days' WHERE id = $1", [old]);
+      }
+      await client.query("UPDATE blobs SET kept = true WHERE id = $1", [blobId]);
+      await client.query(
+        `INSERT INTO backups (account_id, blob_id, wrapped_key, size) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (account_id) DO UPDATE SET blob_id = EXCLUDED.blob_id, wrapped_key = EXCLUDED.wrapped_key, size = EXCLUDED.size, updated_at = now()`,
+        [accountId, blobId, wrappedKey, Number(blob.rows[0]!.size)],
+      );
+      return true;
+    });
+  }
+
+  async getBackup(accountId: string): Promise<{ blobId: string; wrappedKey: string; size: number; updatedAt: number } | null> {
+    const { rows } = await this.pool.query<{ blob_id: string; wrapped_key: string; size: string; updated_at: Date }>(
+      "SELECT blob_id, wrapped_key, size, updated_at FROM backups WHERE account_id = $1",
+      [accountId],
+    );
+    const row = rows[0];
+    return row ? { blobId: row.blob_id, wrappedKey: row.wrapped_key, size: Number(row.size), updatedAt: row.updated_at.getTime() } : null;
   }
 
   // ---- push --------------------------------------------------------------

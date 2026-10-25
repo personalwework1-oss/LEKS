@@ -37,6 +37,9 @@ export const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 /** Encrypted files are deleted from the server after this many days; phones keep their own copy. */
 export const BLOB_RETENTION_DAYS = 30;
 
+/** Devices that have not connected for this many days are deleted (with their queued messages). */
+export const DEVICE_RETENTION_DAYS = 30;
+
 /** How much one device may upload per day, in bytes. */
 export const DAILY_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -235,6 +238,19 @@ export const ClientFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("call_token"), requestId: RequestId, room: Id }),
   /** Sends a test notification to this device right away and reports what the push service said. */
   z.object({ type: z.literal("test_push"), requestId: RequestId }),
+  /** The devices of an account, so chats can include all of them (and drop removed ones). */
+  z.object({ type: z.literal("list_devices"), requestId: RequestId, accountId: Id }),
+  /** Signs another device of my own account out and deletes it. */
+  z.object({ type: z.literal("remove_device"), requestId: RequestId, deviceId: Id }),
+  /** Makes an uploaded file this account's backup (replacing the previous one). */
+  z.object({
+    type: z.literal("set_backup"),
+    requestId: RequestId,
+    blobId: Id,
+    /** The backup's key, sealed with a key derived from the password on the phone. */
+    wrappedKey: z.string().min(1).max(2048),
+  }),
+  z.object({ type: z.literal("get_backup"), requestId: RequestId }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
@@ -306,6 +322,19 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("recovery_code"), requestId: RequestId, recoveryCode: z.string() }),
   z.object({ type: z.literal("recovery_code_deleted"), requestId: RequestId }),
   z.object({ type: z.literal("password_changed"), requestId: RequestId }),
+  z.object({
+    type: z.literal("devices"),
+    requestId: RequestId,
+    accountId: Id,
+    devices: z.array(z.object({ deviceId: Id, platform: z.string(), lastSeenAt: z.number().int().nullable() })),
+  }),
+  z.object({ type: z.literal("device_removed"), requestId: RequestId }),
+  z.object({ type: z.literal("backup_saved"), requestId: RequestId }),
+  z.object({
+    type: z.literal("backup"),
+    requestId: RequestId,
+    backup: z.object({ blobId: Id, wrappedKey: z.string(), size: z.number().int(), updatedAt: z.number().int() }).nullable(),
+  }),
   z.object({
     type: z.literal("push_test"),
     requestId: RequestId,
