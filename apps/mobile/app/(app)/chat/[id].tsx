@@ -11,7 +11,7 @@ import { pickDocuments, pickFromGallery } from "@/features/attachments";
 import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { callText, MessengerError, previewOf } from "@/messaging/messenger";
-import { useConversation, useMessages, useTyping } from "@/messaging/hooks";
+import { chatFace, nameOf, useConversation, useMessages, usePeople, useTyping } from "@/messaging/hooks";
 import { type CallEvent, type Message, REACTIONS } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
@@ -57,7 +57,9 @@ export default function Chat() {
     return out;
   }, [messages]);
 
-  const title = chat?.title ?? "Чат";
+  const people = usePeople();
+  const face = chat ? chatFace(people, chat) : { title: "Чат", photo: null };
+  const title = face.title;
   const canSend = draft.trim().length > 0 && !!messenger && !!chat;
 
   function onChangeDraft(text: string) {
@@ -116,7 +118,10 @@ export default function Chat() {
   }
 
   const isGroup = chat?.kind === "group";
-  const names = useMemo(() => new Map((chat?.members ?? []).map((m) => [m.accountId, m.displayName])), [chat?.members]);
+  const names = useMemo(
+    () => new Map((chat?.members ?? []).map((m) => [m.accountId, nameOf(people, m.accountId, m.displayName)])),
+    [chat?.members, people],
+  );
   const status = typing
     ? "печатает…"
     : connection !== "online"
@@ -144,13 +149,17 @@ export default function Chat() {
       >
         <IconButton icon="back" label="Назад к чатам" tone="plain" onPress={() => router.back()} />
         <Pressable
-          disabled={!isGroup}
-          onPress={() => router.push({ pathname: "/group/[id]", params: { id } })}
-          accessibilityRole={isGroup ? "button" : undefined}
-          accessibilityHint={isGroup ? "Открыть участников и настройки группы" : undefined}
+          disabled={!chat}
+          onPress={() =>
+            isGroup
+              ? router.push({ pathname: "/group/[id]", params: { id } })
+              : chat && router.push({ pathname: "/contact/[id]", params: { id: chat.peerAccountId } })
+          }
+          accessibilityRole="button"
+          accessibilityHint={isGroup ? "Открыть участников и настройки группы" : "Открыть профиль"}
           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
         >
-        <Avatar name={title} seed={isGroup ? id : (chat?.peerAccountId ?? id)} size={42} />
+        <Avatar name={title} seed={isGroup ? id : (chat?.peerAccountId ?? id)} size={42} photo={face.photo} />
         <View style={{ flex: 1 }}>
           <AppText variant="heading" numberOfLines={1}>
             {title}

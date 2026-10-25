@@ -1,8 +1,10 @@
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, ScrollView, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Icon } from "@/components/Icon";
 import { SettingsGroup } from "@/components/SettingsList";
+import { usePeople } from "@/messaging/hooks";
 import { AppText, Avatar } from "@/components/ui";
 import { APP_VERSION } from "@/config";
 import { useSession } from "@/state/session";
@@ -14,6 +16,8 @@ export default function Settings() {
   const p = usePalette();
   const insets = useSafeAreaInsets();
   const { session, lock, biometricLabel, signOut, realtime } = useSession();
+  const people = usePeople();
+  const me = session ? people.get(session.accountId) : undefined;
   const [push, setPush] = useState<PushState>(pushState());
   const [testing, setTesting] = useState(false);
   useEffect(() => onPushState(setPush), []);
@@ -66,17 +70,26 @@ export default function Settings() {
         Настройки
       </Text>
 
-      <View style={{ padding: 16, borderRadius: 20, backgroundColor: p.surface, flexDirection: "row", alignItems: "center", gap: 14 }}>
-        <Avatar name={session.displayName} seed={session.accountId} size={64} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityHint="Изменить фото, имя и «о себе»"
+        onPress={() => router.push("/settings/profile")}
+        style={({ pressed }) => ({ padding: 16, borderRadius: 20, backgroundColor: pressed ? p.surfaceMuted : p.surface, flexDirection: "row", alignItems: "center", gap: 14 })}
+      >
+        <Avatar name={me?.displayName ?? session.displayName} seed={session.accountId} size={64} photo={me?.photo} />
         <View style={{ flex: 1 }}>
           <AppText variant="heading" style={{ fontFamily: fonts.bold, fontSize: 19, lineHeight: 24 }}>
-            {session.displayName}
+            {me?.displayName ?? session.displayName}
           </AppText>
-          <AppText muted style={{ fontSize: 15 }}>
-            @{session.username}
+          <AppText muted style={{ fontSize: 15 }} numberOfLines={1}>
+            {me?.about ? me.about : `@${session.username}`}
+          </AppText>
+          <AppText variant="caption" color={p.accentText} style={{ marginTop: 2 }}>
+            {me?.photo ? "Изменить профиль" : "Добавить фото и «о себе»"}
           </AppText>
         </View>
-      </View>
+        <Icon name="chevron" size={18} color={p.textSubtle} strokeWidth={2} />
+      </Pressable>
 
       {push.state === "unsupported" ? null : (
         <SettingsGroup

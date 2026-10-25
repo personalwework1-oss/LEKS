@@ -3,6 +3,7 @@ import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import type { OutgoingFile } from "@/messaging/messenger";
+import { MAX_PHOTO_CHARS } from "@/messaging/types";
 
 /** Photos are sent at most this many pixels on the long side (like other messengers do). */
 const MAX_SIDE = 2048;
@@ -84,4 +85,36 @@ export async function pickDocuments(): Promise<OutgoingFile[]> {
     height: null,
     thumb: null,
   }));
+}
+
+/**
+ * A profile photo: picked (or taken) and cropped to a square by the person,
+ * then shrunk until it fits in an encrypted message. Base64 JPEG, or null if cancelled.
+ */
+export async function pickProfilePhoto(source: "gallery" | "camera"): Promise<string | null> {
+  const options: ImagePicker.ImagePickerOptions = { mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 1, exif: false };
+  if (source === "camera") {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) return null;
+  }
+  const result = source === "camera" ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
+  if (result.canceled || !result.assets[0]) return null;
+  const asset = result.assets[0];
+  // Centre square, in case the crop step was skipped.
+  const side = Math.min(asset.width, asset.height);
+  const crop = { originX: Math.floor((asset.width - side) / 2), originY: Math.floor((asset.height - side) / 2), width: side, height: side };
+  for (const [size, compress] of [
+    [640, 0.8],
+    [512, 0.72],
+    [384, 0.65],
+    [256, 0.6],
+  ] as const) {
+    const image = await (await ImageManipulator.manipulate(asset.uri).crop(crop).resize({ width: size, height: size }).renderAsync()).saveAsync({
+      format: SaveFormat.JPEG,
+      compress,
+      base64: true,
+    });
+    if (image.base64 && image.base64.length <= MAX_PHOTO_CHARS) return image.base64;
+  }
+  return null;
 }

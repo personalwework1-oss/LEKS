@@ -7,8 +7,8 @@ import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, IconButton } from "@/components/ui";
 import { listTime } from "@/format";
-import { useConversations } from "@/messaging/hooks";
-import type { Conversation } from "@/messaging/types";
+import { chatFace, useConversations, usePeople } from "@/messaging/hooks";
+import type { Conversation, Person } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -19,6 +19,7 @@ export default function Chats() {
   const insets = useSafeAreaInsets();
   const { messenger } = useSession();
   const { data: conversations, ready } = useConversations();
+  const people = usePeople();
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
 
@@ -27,7 +28,7 @@ export default function Chats() {
   const shown = conversations.filter(
     (c) =>
       (filter === "all" || c.unread > 0) &&
-      (!needle || c.title.toLowerCase().includes(needle) || (c.username ?? "").includes(needle.replace(/^@/, ""))),
+      (!needle || chatFace(people, c).title.toLowerCase().includes(needle) || c.title.toLowerCase().includes(needle) || (c.username ?? "").includes(needle.replace(/^@/, ""))),
   );
 
   const chips: { id: Filter; label: string; count?: number }[] = [
@@ -86,7 +87,7 @@ export default function Chats() {
         <FlatList
           data={shown}
           keyExtractor={(c) => c.id}
-          renderItem={({ item }) => <ChatRow chat={item} />}
+          renderItem={({ item }) => <ChatRow chat={item} people={people} />}
           keyboardShouldPersistTaps="handled"
         />
       ) : (
@@ -115,21 +116,22 @@ export default function Chats() {
   );
 }
 
-function ChatRow({ chat }: { chat: Conversation }) {
+function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Person> }) {
   const p = usePalette();
   const unread = chat.unread > 0;
+  const face = chatFace(people, chat);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${chat.title}${unread ? `, непрочитанных: ${chat.unread}` : ""}`}
+      accessibilityLabel={`${face.title}${unread ? `, непрочитанных: ${chat.unread}` : ""}`}
       onPress={() => router.push({ pathname: "/chat/[id]", params: { id: chat.id } })}
       style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
     >
-      <Avatar name={chat.title} seed={chat.peerAccountId} size={54} />
+      <Avatar name={face.title} seed={chat.peerAccountId} size={54} photo={face.photo} />
       <View style={{ flex: 1, gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <AppText variant="bodyStrong" numberOfLines={1} style={{ flex: 1 }}>
-            {chat.title}
+            {face.title}
           </AppText>
           <AppText variant="caption" color={unread ? p.accentText : p.textMuted}>
             {listTime(chat.lastAt)}

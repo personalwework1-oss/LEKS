@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
@@ -289,9 +290,18 @@ export function Notice({ tone = "info", icon, children }: { tone?: "info" | "war
   );
 }
 
-export function Avatar({ name, seed, size = 54 }: { name: string; seed: string; size?: number }) {
+export function Avatar({ name, seed, size = 54, photo }: { name: string; seed: string; size?: number; photo?: string | null }) {
   const p = usePalette();
   const tint = avatarTint(seed, p.scheme);
+  if (photo) {
+    return (
+      <Image
+        accessibilityElementsHidden
+        source={{ uri: `data:image/jpeg;base64,${photo}` }}
+        style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: tint.background }}
+      />
+    );
+  }
   return (
     <View
       accessibilityElementsHidden

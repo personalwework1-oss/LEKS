@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar } from "@/components/ui";
 import { formatDuration } from "@/features/waveform";
-import { useConversation } from "@/messaging/hooks";
+import { chatFace, useConversation, usePeople } from "@/messaging/hooks";
 import { useSession } from "@/state/session";
 import { LeksCalls } from "../../modules/leks-calls";
 import type { CallState, EndReason } from "./CallManager";
@@ -100,17 +100,20 @@ function CallScreen({ state }: { state: CallState }) {
   const insets = useSafeAreaInsets();
   const { calls } = useSession();
   const { data: chat } = useConversation(state.conversationId ?? "");
-  const name = chat?.kind === "group" ? chat.title : (chat?.title ?? "Собеседник");
+  const people = usePeople();
+  const face = chat ? chatFace(people, chat) : { title: "Собеседник", photo: null };
+  const name = face.title;
+  const photo = face.photo;
   const caller = chat?.kind === "group" ? chat.members.find((m) => m.accountId === state.from)?.displayName : null;
   const connected = !!state.url && !!state.token && !!state.key && state.phase !== "incoming";
 
   return (
     <View style={{ flex: 1, backgroundColor: "#0E1117", paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }}>
       {connected ? (
-        <Connected state={state} name={name} />
+        <Connected state={state} name={name} photo={photo} />
       ) : (
         <View style={{ flex: 1, alignItems: "center", paddingTop: 60, gap: 14 }}>
-          <Avatar name={name} seed={state.conversationId ?? ""} size={112} />
+          <Avatar name={name} seed={state.conversationId ?? ""} size={112} photo={photo} />
           <AppText variant="title" color="#FFFFFF" style={{ textAlign: "center", paddingHorizontal: 24 }}>
             {name}
           </AppText>
@@ -153,7 +156,7 @@ async function askForMedia(video: boolean): Promise<boolean> {
 }
 
 /** In the room: video tiles (or the name), the timer and controls. */
-function Connected({ state, name }: { state: CallState; name: string }) {
+function Connected({ state, name, photo }: { state: CallState; name: string; photo: string | null }) {
   const { e2eeManager } = useRNE2EEManager({ sharedKey: state.key ?? "" });
   const [ready, setReady] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -176,7 +179,7 @@ function Connected({ state, name }: { state: CallState; name: string }) {
     };
   }, []);
 
-  if (!ready) return <Waiting name={name} state={state} text={problem ?? "Подключение…"} warn={!!problem} />;
+  if (!ready) return <Waiting name={name} photo={photo} state={state} text={problem ?? "Подключение…"} warn={!!problem} />;
 
   return (
     <LiveKitRoom
@@ -189,17 +192,17 @@ function Connected({ state, name }: { state: CallState; name: string }) {
       onError={(error) => setProblem(error.message)}
       onDisconnected={() => setProblem((current) => current ?? "Соединение прервалось")}
     >
-      <RoomView state={state} name={name} problem={problem} />
+      <RoomView state={state} name={name} photo={photo} problem={problem} />
     </LiveKitRoom>
   );
 }
 
-function Waiting({ name, state, text, warn }: { name: string; state: CallState; text: string; warn?: boolean }) {
+function Waiting({ name, photo, state, text, warn }: { name: string; photo: string | null; state: CallState; text: string; warn?: boolean }) {
   const { calls } = useSession();
   return (
     <View style={{ flex: 1 }}>
       <View style={{ flex: 1, alignItems: "center", paddingTop: 60, gap: 14 }}>
-        <Avatar name={name} seed={state.conversationId ?? ""} size={112} />
+        <Avatar name={name} seed={state.conversationId ?? ""} size={112} photo={photo} />
         <AppText variant="title" color="#FFFFFF" style={{ textAlign: "center", paddingHorizontal: 24 }}>
           {name}
         </AppText>
@@ -221,7 +224,7 @@ const CONNECTION_TEXT: Partial<Record<ConnectionState, string>> = {
   [ConnectionState.Disconnected]: "Нет соединения",
 };
 
-function RoomView({ state, name, problem }: { state: CallState; name: string; problem: string | null }) {
+function RoomView({ state, name, photo, problem }: { state: CallState; name: string; photo: string | null; problem: string | null }) {
   const { calls } = useSession();
   const room = useRoomContext();
   const connection = useConnectionState(room);
@@ -324,7 +327,7 @@ function RoomView({ state, name, problem }: { state: CallState; name: string; pr
           )
         ) : (
           <View style={{ flex: 1, alignItems: "center", paddingTop: 60, gap: 14 }}>
-            <Avatar name={name} seed={state.conversationId ?? ""} size={112} />
+            <Avatar name={name} seed={state.conversationId ?? ""} size={112} photo={photo} />
             <AppText variant="title" color="#FFFFFF" style={{ textAlign: "center", paddingHorizontal: 24 }}>
               {name}
             </AppText>

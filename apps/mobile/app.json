@@ -42,7 +42,7 @@
         "expo-image-picker",
         {
           "photosPermission": "LEKS открывает фото и видео, только когда вы сами выбираете их для отправки.",
-          "cameraPermission": "Камера нужна для видеозвонков.",
+          "cameraPermission": "Камера нужна для видеозвонков и фото профиля.",
           "microphonePermission": "Микрофон нужен для звонков и голосовых сообщений."
         }
       ],
@@ -61,7 +61,7 @@
       [
         "@config-plugins/react-native-webrtc",
         {
-          "cameraPermission": "Камера нужна для видеозвонков.",
+          "cameraPermission": "Камера нужна для видеозвонков и фото профиля.",
           "microphonePermission": "Микрофон нужен для звонков и голосовых сообщений."
         }
       ],

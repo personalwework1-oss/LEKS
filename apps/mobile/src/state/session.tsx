@@ -149,8 +149,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           if (LeksCalls) {
             void created
               .conversation(signal.conversationId)
-              .then((chat) => {
-                const name = chat?.kind === "group" ? chat.members.find((m) => m.accountId === signal.from)?.displayName : chat?.title;
+              .then(async (chat) => {
+                const person = await created.person(signal.from).catch(() => null);
+                const name =
+                  person?.nickname ||
+                  person?.displayName ||
+                  (chat?.kind === "group" ? chat.members.find((m) => m.accountId === signal.from)?.displayName : chat?.title);
                 LeksCalls?.showIncomingCall(name ?? "LEKS", name ? "Входящий звонок · LEKS" : "Входящий звонок");
               })
               .catch(() => LeksCalls?.showIncomingCall("LEKS", "Входящий звонок"));

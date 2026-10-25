@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, NavHeader, TextField } from "@/components/ui";
 import { PeoplePicker } from "@/features/PeoplePicker";
-import { useConversation } from "@/messaging/hooks";
+import { nameOf, useConversation, usePeople } from "@/messaging/hooks";
 import type { GroupMember } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
@@ -18,6 +18,7 @@ export default function GroupInfo() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { messenger, session } = useSession();
   const { data: chat } = useConversation(id);
+  const people = usePeople();
   const [title, setTitle] = useState<string | null>(null);
   const [adding, setAdding] = useState<PublicUser[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,6 +47,7 @@ export default function GroupInfo() {
       member.role === "admin"
         ? { text: "Сделать участником", onPress: () => void run(() => messenger.setRole(id, member.accountId, "member")) }
         : { text: "Сделать админом", onPress: () => void run(() => messenger.setRole(id, member.accountId, "admin")) },
+      { text: "Профиль", onPress: () => router.push({ pathname: "/contact/[id]", params: { id: member.accountId } }) },
       { text: "Удалить из группы", style: "destructive", onPress: () => void run(() => messenger.removeMember(id, member.accountId)) },
       { text: "Отмена", style: "cancel" },
     ]);
@@ -119,10 +121,10 @@ export default function GroupInfo() {
           {chat.members.map((member, i) => (
             <Pressable
               key={member.accountId}
-              disabled={!isAdmin || member.accountId === session?.accountId}
-              onPress={() => memberActions(member)}
-              accessibilityRole={isAdmin && member.accountId !== session?.accountId ? "button" : undefined}
-              accessibilityLabel={`${member.displayName}, @${member.username}${member.role === "admin" ? ", админ" : ""}`}
+              disabled={member.accountId === session?.accountId}
+              onPress={() => (isAdmin ? memberActions(member) : router.push({ pathname: "/contact/[id]", params: { id: member.accountId } }))}
+              accessibilityRole={member.accountId !== session?.accountId ? "button" : undefined}
+              accessibilityLabel={`${nameOf(people, member.accountId, member.displayName)}, @${member.username}${member.role === "admin" ? ", админ" : ""}`}
               style={({ pressed }) => ({
                 flexDirection: "row",
                 alignItems: "center",
@@ -134,10 +136,12 @@ export default function GroupInfo() {
                 backgroundColor: pressed ? p.surfaceMuted : "transparent",
               })}
             >
-              <Avatar name={member.displayName} seed={member.accountId} size={42} />
+              <Avatar name={member.displayName} seed={member.accountId} size={42} photo={people.get(member.accountId)?.photo} />
               <View style={{ flex: 1 }}>
                 <AppText variant="bodyStrong" numberOfLines={1}>
-                  {member.accountId === session?.accountId ? `${member.displayName} (вы)` : member.displayName}
+                  {member.accountId === session?.accountId
+                    ? `${nameOf(people, member.accountId, member.displayName)} (вы)`
+                    : nameOf(people, member.accountId, member.displayName)}
                 </AppText>
                 <AppText variant="caption" muted>
                   @{member.username}
