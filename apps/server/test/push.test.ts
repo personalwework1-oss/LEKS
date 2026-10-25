@@ -1,6 +1,6 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { FcmNotifier, PUSH_INTERVAL_MS, parseServiceAccount } from "../src/push/fcm.js";
+import { callerHint, FcmNotifier, PUSH_INTERVAL_MS, parseServiceAccount } from "../src/push/fcm.js";
 import type { Store } from "../src/store.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -47,11 +47,16 @@ describe("Android push", () => {
   it("wakes the app silently for calls, separately from messages", async () => {
     const { notifier, calls } = setup({ d1: { provider: "fcm", token: "t" } });
     await notifier.notify("d1", "message");
-    await notifier.notify("d1", "call");
+    await notifier.notify("d1", "call", "acc-alice");
     const sent = calls.filter((c) => c.url.includes("messages:send")).map((c) => JSON.parse(c.body).message);
     expect(sent).toHaveLength(2);
     // Calls are a silent wake-up (the app rings); no text at all.
-    expect(sent[1]).toEqual({ token: "t", data: { leks: "call" }, android: { priority: "HIGH", ttl: "45s" } });
+    expect(sent[1]).toEqual({ token: "t", data: { leks: "call", c: callerHint("d1", "acc-alice") }, android: { priority: "HIGH", ttl: "45s" } });
+    // The hint is not the account id, and differs for every called device.
+    expect(callerHint("d1", "acc-alice")).toMatch(/^[0-9a-f]{32}$/);
+    expect(callerHint("d1", "acc-alice")).not.toBe(callerHint("d2", "acc-alice"));
+    // The phone side computes the same value (sha256 of "device:account").
+    expect(callerHint("dev", "acc")).toBe("62f5bfa2fda3bfbef28ef7f428943faf");
     expect(sent[0].android.notification.channel_id).toBe("messages");
   });
 

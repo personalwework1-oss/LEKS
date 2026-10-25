@@ -130,8 +130,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // Ringing while the app is in the background: the phone-style call screen when available.
         // Only for fresh invites, and only when the app is not on screen (then the call screen shows).
         if (signal.type === "invite" && AppState.currentState !== "active" && Date.now() - signal.sentAt < RING_MS) {
-          if (LeksCalls) LeksCalls.showIncomingCall("LEKS", "Входящий звонок");
-          else void notifyLocally("call").catch(() => undefined);
+          if (LeksCalls) {
+            void created
+              .conversation(signal.conversationId)
+              .then((chat) => {
+                const name = chat?.kind === "group" ? chat.members.find((m) => m.accountId === signal.from)?.displayName : chat?.title;
+                LeksCalls?.showIncomingCall(name ?? "LEKS", name ? "Входящий звонок · LEKS" : "Входящий звонок");
+              })
+              .catch(() => LeksCalls?.showIncomingCall("LEKS", "Входящий звонок"));
+          } else void notifyLocally("call").catch(() => undefined);
         }
         callManager.receive(signal);
       });

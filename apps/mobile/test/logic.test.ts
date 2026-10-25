@@ -102,3 +102,30 @@ describe("voice waveform", () => {
     expect(formatDuration(15 * 60 * 1000)).toBe("15:00");
   });
 });
+
+describe("caller name on the call notification", () => {
+  const { callerHint, findCaller, hintOf } = jest.requireActual<typeof import("../src/calls/callerName")>("../src/calls/callerName");
+
+  it("computes the same hint as the server", () => {
+    expect(callerHint("dev", "acc")).toBe("62f5bfa2fda3bfbef28ef7f428943faf");
+  });
+
+  it("finds the caller among this phone's contacts only", () => {
+    const hint = callerHint("my-device", "acc-bob");
+    const contacts = [
+      { accountId: "acc-alice", name: "Алиса" },
+      { accountId: "acc-bob", name: "Боб" },
+    ];
+    expect(findCaller(hint, "my-device", contacts)).toBe("Боб");
+    // Another phone cannot match it, and a stranger is not named.
+    expect(findCaller(hint, "other-device", contacts)).toBeNull();
+    expect(findCaller(callerHint("my-device", "acc-eve"), "my-device", contacts)).toBeNull();
+  });
+
+  it("reads the hint from the push data in any shape", () => {
+    const hint = "0123456789abcdef0123456789abcdef";
+    expect(hintOf({ data: { leks: "call", c: hint } })).toBe(hint);
+    expect(hintOf({ data: { body: JSON.stringify({ leks: "call", c: hint }) } })).toBe(hint);
+    expect(hintOf({ data: { leks: "call" } })).toBeNull();
+  });
+});

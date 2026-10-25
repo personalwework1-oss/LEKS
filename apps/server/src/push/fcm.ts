@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto";
+import { createHash, createSign } from "node:crypto";
 import type { WakeReason } from "@leks/protocol";
 import type { PushNotifier, PushTestResult } from "../hub.js";
 import type { Store } from "../store.js";
@@ -36,11 +36,20 @@ const chatMessage = (token: string) => ({
  * full-screen call notification. It carries no content, only that it is a call,
  * and is useless after ringing stops, so it expires quickly.
  */
-const callMessage = (token: string) => ({
+const callMessage = (token: string, hint?: string) => ({
   token,
-  data: { leks: "call" },
+  data: { leks: "call", ...(hint ? { c: hint } : {}) },
   android: { priority: "HIGH", ttl: "45s" },
 });
+
+/**
+ * Lets the called phone show who is calling without anyone else learning it:
+ * a hash of (called device, caller account). The phone compares it with its own
+ * contacts; to the push service it is an opaque value, different for every
+ * recipient. The server knows both parts anyway (it routes the call).
+ */
+export const callerHint = (deviceId: string, callerAccountId: string) =>
+  createHash("sha256").update(`${deviceId}:${callerAccountId}`).digest("hex").slice(0, 32);
 
 const b64url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 
@@ -116,7 +125,7 @@ export class FcmNotifier implements PushNotifier {
     }
   }
 
-  async notify(deviceId: string, reason: WakeReason = "message"): Promise<void> {
+  async notify(deviceId: string, reason: WakeReason = "message", from?: string): Promise<void> {
     // Calls always ring; messages are bundled into one signal per short interval.
     const key = `${reason}:${deviceId}`;
     const last = this.lastSent.get(key) ?? 0;
@@ -128,7 +137,9 @@ export class FcmNotifier implements PushNotifier {
     const response = await this.fetchImpl(`https://fcm.googleapis.com/v1/projects/${this.account.project_id}/messages:send`, {
       method: "POST",
       headers: { authorization: `Bearer ${await this.token()}`, "content-type": "application/json" },
-      body: JSON.stringify({ message: reason === "call" ? callMessage(target.token) : chatMessage(target.token) }),
+      body: JSON.stringify({
+        message: reason === "call" ? callMessage(target.token, from ? callerHint(deviceId, from) : undefined) : chatMessage(target.token),
+      }),
     });
     if (response.status === 404 || response.status === 400) {
       // The app was removed or the token is old: forget it.

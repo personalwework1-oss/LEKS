@@ -192,6 +192,7 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
           hub.notifyQueued(
             result.created.map((row) => row.recipientDeviceId),
             frame.wake,
+            me.accountId,
           );
           return;
         }

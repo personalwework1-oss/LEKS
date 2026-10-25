@@ -25,7 +25,8 @@ export interface DeviceConnection {
 export type PushTestResult = "sent" | "no_token" | "not_configured" | "rejected" | "failed";
 
 export interface PushNotifier {
-  notify(deviceId: string, reason: WakeReason): Promise<void>;
+  /** `from` is the sender's account, used only to derive the caller hint (see callerHint). */
+  notify(deviceId: string, reason: WakeReason, from?: string): Promise<void>;
   /** Sends a visible test notification now (no throttling) and says what happened. */
   test?(deviceId: string): Promise<PushTestResult>;
 }
@@ -74,14 +75,14 @@ export class Hub {
 
   /** New messages were queued for these devices: deliver now, or send a push signal. */
   /** Delivers to connected devices; offline ones get a push only when the sender asked to wake them. */
-  notifyQueued(deviceIds: string[], wake?: WakeReason): void {
+  notifyQueued(deviceIds: string[], wake?: WakeReason, from?: string): void {
     for (const deviceId of new Set(deviceIds)) {
       const connections = this.connections.get(deviceId);
       if (connections && connections.size > 0) {
         for (const connection of connections) this.deliver(connection);
       } else if (wake) {
         this.push
-          .notify(deviceId, wake)
+          .notify(deviceId, wake, from)
           .then(() => this.log.info({ reason: wake }, "push signal handed over"))
           .catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
       }
