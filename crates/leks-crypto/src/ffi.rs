@@ -111,6 +111,11 @@ enum Request {
         key: String,
         sealed: String,
     },
+    /// A key from a password (scrypt); `salt` names what it is for.
+    DeriveKey {
+        password: String,
+        salt: String,
+    },
 }
 
 #[derive(Debug)]
@@ -189,6 +194,14 @@ fn handle(request: &[u8]) -> Result<Value, Failure> {
             let plaintext =
                 file_crypto::open(&unb64(&key)?, &unb64(&sealed)?).map_err(file_failure)?;
             return Ok(json!({ "plaintext": b64(&plaintext) }));
+        }
+        Request::DeriveKey { password, salt } => {
+            if password.is_empty() || salt.is_empty() {
+                return Err(fail("invalid_input", "empty password or salt"));
+            }
+            let key = file_crypto::derive_key(password.as_bytes(), salt.as_bytes())
+                .map_err(file_failure)?;
+            return Ok(json!({ "key": b64(&key) }));
         }
         _ => {}
     }
@@ -335,7 +348,8 @@ fn handle_open(client: &mut Client, request: Request) -> Result<(Value, bool), F
         | Request::EncryptFile { .. }
         | Request::DecryptFile { .. }
         | Request::Seal { .. }
-        | Request::Unseal { .. } => unreachable!("handled before"),
+        | Request::Unseal { .. }
+        | Request::DeriveKey { .. } => unreachable!("handled before"),
     })
 }
 

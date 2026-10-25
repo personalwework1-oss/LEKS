@@ -14,6 +14,8 @@ export default function AppLayout() {
       <Stack.Screen name="settings/lock" />
       <Stack.Screen name="settings/password" />
       <Stack.Screen name="settings/backup-code" />
+      <Stack.Screen name="settings/backup" />
+      <Stack.Screen name="settings/devices" />
     </Stack>
     <CallOverlay />
     </>

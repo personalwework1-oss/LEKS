@@ -3,7 +3,9 @@ import * as LocalAuthentication from "expo-local-authentication";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import { type AccountSession, toBase64url } from "@leks/protocol";
-import { HttpApi } from "../api/http";
+import { ApiError, HttpApi } from "../api/http";
+import { backupIfDue, rememberBackupKey } from "../backup";
+import { signInSecret } from "../crypto/passwordKeys";
 import { type ConnectionState, Realtime } from "../api/realtime";
 import { API_URL, APP_VERSION, WS_URL } from "../config";
 import { LeksCrypto } from "../../modules/leks-crypto";
@@ -74,6 +76,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [calls, setCalls] = useState<CallManager | null>(null);
   const [biometricLabel, setBiometricLabel] = useState<string | null>(null);
   const lockRef = useRef(lock);
+  /** Accounts made before the password stayed on the phone: switched over after the first sign-in. */
+  const legacyPassword = useRef<{ current: string; next: string } | null>(null);
   useEffect(() => {
     lockRef.current = lock;
   }, [lock]);
@@ -96,6 +100,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         onAuthenticated: (available) => {
           void created.onAuthenticated(available).catch((e) => console.warn("key packages", e));
           void registerForPush(realtime);
+          const legacy = legacyPassword.current;
+          if (legacy) {
+            void realtime
+              .request({ type: "change_password", currentPassword: legacy.current, newPassword: legacy.next }, "password_changed")
+              .then(() => {
+                legacyPassword.current = null;
+              })
+              .catch((e) => console.warn("password upgrade", e));
+          }
+          // The daily encrypted copy, once things have settled after connecting.
+          setTimeout(() => void backupIfDue(created).catch((e) => console.warn("backup", e)), 20_000);
         },
       });
       const callManager = new CallManager({
@@ -299,18 +314,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         const key = DeviceKey.generate(randomBytes);
         const account = await http.register({
           ...input,
+          password: await signInSecret(input.username, input.password),
           createRecoveryCode: false,
           device: { platform, authPublicKey: key.publicKey },
         });
+        await rememberBackupKey(account.accountId, input.password).catch(() => undefined);
         await adopt(account, key, "register");
       },
       async login(input) {
         const key = DeviceKey.generate(randomBytes);
-        await adopt(await http.login({ ...input, device: { platform, authPublicKey: key.publicKey } }), key, "login");
+        const device = { platform, authPublicKey: key.publicKey } as const;
+        const secret = await signInSecret(input.username, input.password);
+        let account: AccountSession;
+        try {
+          account = await http.login({ username: input.username, password: secret, device });
+        } catch (error) {
+          // An account from before this version still has the plain password on the server.
+          if (!(error instanceof ApiError && error.code === "login_failed") || secret === input.password) throw error;
+          account = await http.login({ username: input.username, password: input.password, device });
+          legacyPassword.current = { current: input.password, next: secret };
+        }
+        await rememberBackupKey(account.accountId, input.password).catch(() => undefined);
+        await adopt(account, key, "login");
       },
       async recover(input) {
         const key = DeviceKey.generate(randomBytes);
-        await adopt(await http.recover({ ...input, device: { platform, authPublicKey: key.publicKey } }), key, "login");
+        const account = await http.recover({
+          ...input,
+          newPassword: await signInSecret(input.username, input.newPassword),
+          device: { platform, authPublicKey: key.publicKey },
+        });
+        await rememberBackupKey(account.accountId, input.newPassword).catch(() => undefined);
+        await adopt(account, key, "login");
       },
       finishOnboarding() {
         setOnboarding(null);

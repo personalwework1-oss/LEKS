@@ -50,6 +50,17 @@ export class ExpoFiles implements FileIO {
     if (file.exists) file.delete();
   }
 
+  async writeText(uri: string, text: string): Promise<void> {
+    const file = new File(uri);
+    if (file.exists) file.delete();
+    file.create();
+    file.write(text);
+  }
+
+  async readText(uri: string): Promise<string> {
+    return new File(uri).text();
+  }
+
   async clear(): Promise<void> {
     if (this.media.exists) this.media.delete();
     this.media.create({ idempotent: true, intermediates: true });

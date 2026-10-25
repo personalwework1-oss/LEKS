@@ -9,6 +9,9 @@ export interface FileIO {
   upload(blobId: string, token: string, uri: string): Promise<void>;
   download(blobId: string, uri: string): Promise<void>;
   remove(uri: string): Promise<void>;
+  /** Small text files (the backup before it is encrypted / after it is decrypted). */
+  writeText(uri: string, text: string): Promise<void>;
+  readText(uri: string): Promise<string>;
   /** Deletes every attachment (sign-out). */
   clear(): Promise<void>;
 }

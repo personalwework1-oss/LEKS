@@ -14,6 +14,7 @@ const KEYS = {
   session: "leks.session",
   deviceKey: "leks.device-key",
   lock: "leks.lock",
+  backup: "leks.backup",
 } as const;
 
 export const StoredSession = z.object({
@@ -33,6 +34,14 @@ export const LockSettings = z.object({
   blockedUntil: z.number().int().default(0),
 });
 export type LockSettings = z.infer<typeof LockSettings>;
+
+/** The backup's password key (made from the password at sign-in; never leaves the phone) and the schedule. */
+export const BackupSettings = z.object({
+  key: z.string().optional(),
+  auto: z.boolean().default(true),
+  lastAt: z.number().int().default(0),
+});
+export type BackupSettings = z.infer<typeof BackupSettings>;
 
 export const NO_LOCK: LockSettings = { method: "none", failures: 0, blockedUntil: 0 };
 
@@ -61,6 +70,11 @@ export const secure = {
     return (await readJson(KEYS.lock, LockSettings)) ?? NO_LOCK;
   },
   saveLock: (lock: LockSettings) => SecureStore.setItemAsync(KEYS.lock, JSON.stringify(lock), options),
+
+  async loadBackup(): Promise<BackupSettings> {
+    return (await readJson(KEYS.backup, BackupSettings)) ?? { auto: true, lastAt: 0 };
+  },
+  saveBackup: (settings: BackupSettings) => SecureStore.setItemAsync(KEYS.backup, JSON.stringify(settings), options),
 
   async clearAll(): Promise<void> {
     await Promise.all(Object.values(KEYS).map((key) => SecureStore.deleteItemAsync(key, options)));

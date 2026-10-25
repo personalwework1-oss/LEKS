@@ -115,6 +115,13 @@ export default function Settings() {
           }
         />
       )}
+      <SettingsGroup
+        title="Переписка"
+        rows={[
+          { title: "Резервная копия", onPress: () => router.push("/settings/backup") },
+          { title: "Устройства", onPress: () => router.push("/settings/devices") },
+        ]}
+      />
       <SettingsGroup title="Приватность" rows={[{ title: "Блокировка приложения", value: lockValue, onPress: () => router.push("/settings/lock") }]} />
       <SettingsGroup
         title="Безопасность"

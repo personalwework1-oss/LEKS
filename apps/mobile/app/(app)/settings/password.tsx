@@ -2,6 +2,8 @@ import { router } from "expo-router";
 import { useState } from "react";
 import { View } from "react-native";
 import { RealtimeError } from "@/api/realtime";
+import { backupNow, rememberBackupKey } from "@/backup";
+import { signInSecret } from "@/crypto/passwordKeys";
 import { StrengthMeter } from "@/components/StrengthMeter";
 import { AppText, Button, NavHeader, Screen, TextField } from "@/components/ui";
 import { passwordStrength } from "@/passwordStrength";
@@ -10,7 +12,7 @@ import { usePalette } from "@/theme";
 
 export default function ChangePassword() {
   const p = usePalette();
-  const { realtime, session } = useSession();
+  const { realtime, session, messenger } = useSession();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,7 +27,19 @@ export default function ChangePassword() {
     setBusy(true);
     setError(null);
     try {
-      await realtime.request({ type: "change_password", currentPassword: current, newPassword: next }, "password_changed");
+      const username = session?.username ?? "";
+      const newPassword = await signInSecret(username, next);
+      const currentSecret = await signInSecret(username, current);
+      try {
+        await realtime.request({ type: "change_password", currentPassword: currentSecret, newPassword }, "password_changed");
+      } catch (e) {
+        // An account from before this version: the server still has the plain password.
+        if (!(e instanceof RealtimeError && e.code === "wrong_password") || currentSecret === current) throw e;
+        await realtime.request({ type: "change_password", currentPassword: current, newPassword }, "password_changed");
+      }
+      // The copy of the chats is locked with the new password from now on.
+      if (session) await rememberBackupKey(session.accountId, next).catch(() => undefined);
+      if (messenger) void backupNow(messenger).catch(() => undefined);
       setDone(true);
     } catch (e) {
       const code = e instanceof RealtimeError ? e.code : "";

@@ -26,8 +26,17 @@ export interface Me {
   username: string;
 }
 
+/** What a backup holds (encrypted as a whole before it leaves the phone). */
+export interface BackupDump {
+  v: 1;
+  at: number;
+  accountId: string;
+  conversations: Conversation[];
+  messages: Message[];
+}
+
 export class MessengerError extends Error {
-  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed" | "too_large" | "too_many") {
+  constructor(readonly code: "no_devices" | "unknown_chat" | "not_ready" | "not_allowed" | "too_large" | "too_many" | "bad_backup") {
     super(code);
   }
 }
@@ -1012,6 +1021,92 @@ export class Messenger {
       }
     }
     return true;
+  }
+
+  // ---- backup ---------------------------------------------------------------
+
+  /**
+   * Saves an encrypted copy of all chats on the server. The copy is encrypted
+   * with a new key; `wrap` locks that key with the password (on this phone),
+   * so the server holds nothing it can read. Attachments are included as
+   * links (they stay on the server for a while) and download again when opened.
+   */
+  async backup(wrap: (fileKey: string) => Promise<string>): Promise<{ size: number; chats: number; messages: number }> {
+    if (!this.files) throw new MessengerError("not_allowed");
+    const conversations = await this.store.conversations();
+    const messages: Message[] = [];
+    for (const chat of conversations) {
+      for (const m of await this.store.messages(chat.id, Number.MAX_SAFE_INTEGER)) {
+        messages.push({
+          ...m,
+          status: m.status === "sending" ? "failed" : m.status,
+          attachment: m.attachment ? { ...m.attachment, localUri: null, state: m.attachment.blobId ? "remote" : "failed" } : null,
+        });
+      }
+    }
+    const dump: BackupDump = { v: 1, at: this.now(), accountId: this.me.accountId, conversations, messages };
+    const plain = this.files.tempUri();
+    const encrypted = this.files.tempUri();
+    try {
+      await this.files.writeText(plain, JSON.stringify(dump));
+      const { key, size } = await this.engine.encryptFile(plain, encrypted);
+      await this.files.remove(plain);
+      if (size > MAX_BLOB_BYTES) throw new MessengerError("too_large");
+      const ticket = await this.transport.request({ type: "request_upload", size }, "upload_ready");
+      await this.files.upload(ticket.blobId, ticket.token, encrypted);
+      await this.transport.request({ type: "set_backup", blobId: ticket.blobId, wrappedKey: await wrap(key) }, "backup_saved");
+      return { size, chats: conversations.length, messages: messages.length };
+    } finally {
+      await this.files.remove(plain).catch(() => undefined);
+      await this.files.remove(encrypted).catch(() => undefined);
+    }
+  }
+
+  /** When the last copy was saved, or null if there is none. */
+  async backupInfo(): Promise<{ size: number; updatedAt: number } | null> {
+    const answer = await this.transport.request({ type: "get_backup" }, "backup");
+    return answer.backup ? { size: answer.backup.size, updatedAt: answer.backup.updatedAt } : null;
+  }
+
+  /**
+   * Brings the chats back from the copy on the server. `unwrap` unlocks the
+   * copy's key with the password and throws if it is the wrong one. Restored
+   * chats can be read at once; writing works once someone in each chat has
+   * brought this phone in (they are asked to right away).
+   */
+  async restore(unwrap: (wrappedKey: string) => Promise<string>): Promise<{ chats: number; messages: number } | null> {
+    if (!this.files) throw new MessengerError("not_allowed");
+    const answer = await this.transport.request({ type: "get_backup" }, "backup");
+    if (!answer.backup) return null;
+    const key = await unwrap(answer.backup.wrappedKey);
+    const encrypted = this.files.tempUri();
+    const plain = this.files.tempUri();
+    let dump: BackupDump;
+    try {
+      await this.files.download(answer.backup.blobId, encrypted);
+      await this.engine.decryptFile(encrypted, plain, key);
+      dump = JSON.parse(await this.files.readText(plain)) as BackupDump;
+    } finally {
+      await this.files.remove(plain).catch(() => undefined);
+      await this.files.remove(encrypted).catch(() => undefined);
+    }
+    if (dump?.v !== 1 || dump.accountId !== this.me.accountId || !Array.isArray(dump.conversations) || !Array.isArray(dump.messages)) {
+      throw new MessengerError("bad_backup");
+    }
+    let chats = 0;
+    for (const chat of dump.conversations) {
+      if (!chat?.id || (await this.store.conversation(chat.id))) continue;
+      const state = await this.engine.groupState(chat.id).catch(() => null);
+      await this.store.saveConversation({ ...chat, unread: 0, rejoining: !chat.left && !state?.active });
+      chats++;
+    }
+    let restored = 0;
+    for (const m of dump.messages) {
+      if (m?.id && m.conversationId && (await this.store.addMessage(m))) restored++;
+    }
+    this.changed();
+    void this.nudgeContacts().catch((error: unknown) => console.warn("nudge", error));
+    return { chats, messages: restored };
   }
 
   // ---- devices in chats -----------------------------------------------------

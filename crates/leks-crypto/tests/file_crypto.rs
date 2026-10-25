@@ -148,3 +148,21 @@ fn seals_small_values_with_a_given_key() {
     ));
     assert!(matches!(seal(&[1, 2], b"x"), Err(FileError::BadKey)));
 }
+
+#[test]
+fn derives_the_same_key_only_from_the_same_password_and_purpose() {
+    use leks_crypto::file_crypto::derive_key;
+    let a = derive_key(b"correct horse", b"leks/auth/v1/alice").unwrap();
+    assert_eq!(
+        a,
+        derive_key(b"correct horse", b"leks/auth/v1/alice").unwrap()
+    );
+    assert_ne!(
+        a,
+        derive_key(b"correct horse", b"leks/backup/v1/acc").unwrap()
+    );
+    assert_ne!(
+        a,
+        derive_key(b"wrong horse", b"leks/auth/v1/alice").unwrap()
+    );
+}

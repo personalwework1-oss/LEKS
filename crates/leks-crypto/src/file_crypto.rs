@@ -196,3 +196,16 @@ pub fn open(key: &[u8], sealed: &[u8]) -> Result<Vec<u8>, FileError> {
         .decrypt(GenericArray::from_slice(&sealed[..12]), &sealed[12..])
         .map_err(|_| FileError::Rejected)
 }
+
+/// scrypt cost: 2^15 rounds, 32 MiB of memory — a fraction of a second on a
+/// phone, but slow and costly for anyone guessing passwords offline.
+const SCRYPT_LOG_N: u8 = 15;
+
+/// A 32-byte key from a password. The salt says what the key is for (signing
+/// in, the backup), so one never reveals the other.
+pub fn derive_key(password: &[u8], salt: &[u8]) -> Result<[u8; 32], FileError> {
+    let params = scrypt::Params::new(SCRYPT_LOG_N, 8, 1, 32).map_err(|_| FileError::BadKey)?;
+    let mut key = [0u8; 32];
+    scrypt::scrypt(password, salt, &params, &mut key).map_err(|_| FileError::BadKey)?;
+    Ok(key)
+}

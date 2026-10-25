@@ -136,6 +136,12 @@ class TempFiles implements FileIO {
   async remove(uri: string) {
     rmSync(uri, { force: true });
   }
+  async writeText(uri: string, text: string) {
+    writeFileSync(uri, text);
+  }
+  async readText(uri: string) {
+    return readFileSync(uri, "utf8");
+  }
   async clear() {
     rmSync(join(this.dir, "media"), { recursive: true, force: true });
     mkdirSync(join(this.dir, "media"), { recursive: true });
@@ -153,6 +159,7 @@ class FakeServer {
   blobs = new Map<string, Buffer>();
   failUploads = false;
   removed = new Set<string>();
+  backups = new Map<string, { blobId: string; wrappedKey: string; size: number; updatedAt: number }>();
   nudged: string[] = [];
   /** One clock for everyone, so message order is the order things happened. */
   clock = 1_000;
@@ -191,6 +198,15 @@ class Phone {
           const items = [...byDevice.values()];
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
+        }
+        if (frame.type === "set_backup") {
+          const f = frame as unknown as { blobId: string; wrappedKey: string };
+          if (!server.blobs.has(f.blobId)) throw new Error("not_found");
+          server.backups.set(me.accountId, { blobId: f.blobId, wrappedKey: f.wrappedKey, size: server.blobs.get(f.blobId)!.length, updatedAt: server.clock });
+          return { type: "backup_saved", requestId: "r" };
+        }
+        if (frame.type === "get_backup") {
+          return { type: "backup", requestId: "r", backup: server.backups.get(me.accountId) ?? null };
         }
         if (frame.type === "list_devices") {
           const devices = [...server.phones.values()]
@@ -870,6 +886,54 @@ describe("several devices", () => {
     await a.messenger.nudgeContacts();
     expect(server.nudged).toContain("dev-bob");
     expect(server.nudged).not.toContain("dev-alice");
+  });
+});
+
+describe("backup", () => {
+  const wrap = async (key: string) => `wrapped:${key}`;
+  const unwrap = async (wrapped: string) => {
+    if (!wrapped.startsWith("wrapped:")) throw new Error("wrong password");
+    return wrapped.slice("wrapped:".length);
+  };
+
+  it("restores chats on a new phone, which can write once it is brought back in", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await a.messenger.send(chatId, "привет");
+    await a.messenger.flush();
+    await b.deliver();
+    const saved = await b.messenger.backup(wrap);
+    expect(saved.chats).toBe(1);
+    // The server holds only encrypted bytes.
+    const blob = server.blobs.get(server.backups.get("acc-bob")!.blobId)!;
+    expect(blob.toString("utf8")).not.toContain("привет");
+
+    const b2 = new Phone(server, { ...bob, deviceId: "dev-bob2" });
+    await b2.messenger.onAuthenticated(0);
+    const restored = await b2.messenger.restore(unwrap);
+    expect(restored?.chats).toBe(1);
+    expect((await b2.store.messages(chatId)).map((m) => m.text)).toContain("привет");
+    expect((await b2.store.conversation(chatId))?.rejoining).toBe(true);
+    await expect(b2.messenger.send(chatId, "рано")).rejects.toThrow("not_allowed");
+    await settle();
+    expect(server.nudged).toContain("dev-alice");
+
+    await a.messenger.onNudge("acc-bob");
+    await a.messenger.flush();
+    await b2.deliver();
+    expect((await b2.store.conversation(chatId))?.rejoining).toBe(false);
+    await b2.messenger.send(chatId, "я тут");
+    await b2.messenger.flush();
+    await a.deliver();
+    expect((await a.store.messages(chatId)).map((m) => m.text)).toContain("я тут");
+  });
+
+  it("refuses the wrong password and says when there is no copy", async () => {
+    const { server, b } = await chatting();
+    expect(await b.messenger.restore(unwrap)).toBeNull();
+    await b.messenger.backup(async (key) => `other:${key}`);
+    const b2 = new Phone(server, { ...bob, deviceId: "dev-bob2" });
+    await expect(b2.messenger.restore(unwrap)).rejects.toThrow("wrong password");
+    expect(await b2.store.conversations()).toEqual([]);
   });
 });
 
