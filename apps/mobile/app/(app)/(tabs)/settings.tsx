@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { setTheme, THEME_LABEL, type ThemeMode, themeMode } from "@/appearance";
+import { ActionSheet } from "@/components/ActionSheet";
 import { Icon } from "@/components/Icon";
 import { SettingsGroup } from "@/components/SettingsList";
 import { usePeople } from "@/messaging/hooks";
@@ -20,6 +21,7 @@ export default function Settings() {
   const people = usePeople();
   const me = session ? people.get(session.accountId) : undefined;
   const [theme, setThemeState] = useState<ThemeMode>(themeMode());
+  const [themeOpen, setThemeOpen] = useState(false);
   const [push, setPush] = useState<PushState>(pushState());
   const [testing, setTesting] = useState(false);
   useEffect(() => onPushState(setPush), []);
@@ -136,17 +138,7 @@ export default function Settings() {
           {
             title: "Тема",
             value: THEME_LABEL[theme],
-            onPress: () =>
-              Alert.alert("Тема", undefined, [
-                ...(["system", "light", "dark"] as const).map((mode) => ({
-                  text: `${THEME_LABEL[mode]}${mode === theme ? " ✓" : ""}`,
-                  onPress: () => {
-                    setThemeState(mode);
-                    void setTheme(mode);
-                  },
-                })),
-                { text: "Отмена", style: "cancel" as const },
-              ], { cancelable: true }),
+            onPress: () => setThemeOpen(true),
           },
         ]}
       />
@@ -173,6 +165,21 @@ export default function Settings() {
       />
       <SettingsGroup title="Аккаунт" rows={[{ title: "Выйти на этом телефоне", destructive: true, onPress: confirmSignOut }]} />
 
+      <ActionSheet
+        visible={themeOpen}
+        onClose={() => setThemeOpen(false)}
+        title="Тема"
+        actions={(["system", "light", "dark"] as const).map((mode) => ({
+          icon: mode === "system" ? "phoneDevice" : mode === "light" ? "sun" : "moon",
+          label: THEME_LABEL[mode],
+          selected: mode === theme,
+          onPress: () => {
+            setThemeOpen(false);
+            setThemeState(mode);
+            void setTheme(mode);
+          },
+        }))}
+      />
       <AppText variant="caption" muted style={{ textAlign: "center", marginTop: 24 }}>
         LEKS {APP_VERSION}
       </AppText>

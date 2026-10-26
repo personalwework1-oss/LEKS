@@ -883,16 +883,20 @@ describe("several devices", () => {
   });
 
   it("brings my own new phone in and tells it who the chat is with", async () => {
-    const { server, a, chatId } = await chatting();
+    const { server, a, b, chatId } = await chatting();
     await a.messenger.flush();
     const a2 = new Phone(server, { ...alice, deviceId: "dev-alice2" });
     await a2.messenger.onAuthenticated(0);
+    // Bob's phone brings it in (Alice's old phone may be a dead install after a reinstall).
     await a.messenger.syncDevices(chatId, true);
-    await a.messenger.flush();
+    expect(await a.engine.members(chatId)).not.toContain("acc-alice:dev-alice2");
+    await b.messenger.syncDevices(chatId, true);
+    await b.messenger.flush();
     await a2.deliver();
     const chat = await a2.store.conversation(chatId);
     expect(chat?.peerAccountId).toBe("acc-bob");
     expect(chat?.title).toBe("Боб");
+    expect(chat?.accepted).not.toBe(false);
   });
 
   it("only one phone changes the group, and a removed phone is cut off", async () => {

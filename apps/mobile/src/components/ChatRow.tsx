@@ -1,11 +1,13 @@
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import { Alert, Pressable, Text, View } from "react-native";
-import { listTime } from "@/format";
+import { useState } from "react";
+import { Pressable, Text, View } from "react-native";
+import { clockTime, listTime } from "@/format";
 import { chatFace } from "@/messaging/hooks";
 import { type Conversation, isMuted, MUTED_FOREVER, type Person } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
+import { ActionSheet, type SheetAction } from "./ActionSheet";
 import { Icon } from "./Icon";
 import { AppText, Avatar } from "./ui";
 
@@ -16,24 +18,52 @@ export function ChatRow({ chat, people }: { chat: Conversation; people: Map<stri
   const unread = chat.unread > 0;
   const face = chatFace(people, chat);
   const muted = isMuted(chat);
+  const [sheet, setSheet] = useState<"main" | "mute" | null>(null);
   const menu = () => {
     void Haptics.selectionAsync();
-    Alert.alert(face.title, undefined, [
-      ...(chat.archived ? [] : [{ text: chat.pinned ? "Открепить" : "Закрепить наверху", onPress: () => void messenger?.setPinned(chat.id, !chat.pinned) }]),
-      { text: muted ? "Включить звук" : "Без звука…", onPress: () => (muted ? void messenger?.setMuted(chat.id, null) : muteMenu()) },
-      { text: chat.archived ? "Вернуть из архива" : "В архив", onPress: () => void messenger?.setArchived(chat.id, !chat.archived) },
-      { text: "Отмена", style: "cancel" },
-    ]);
+    setSheet("main");
   };
-  const muteMenu = () =>
-    Alert.alert("Без звука", "Уведомлений о сообщениях не будет. Звонки по-прежнему будут звонить.", [
-      { text: "На 1 час", onPress: () => void messenger?.setMuted(chat.id, Date.now() + 3600_000) },
-      { text: "На 8 часов", onPress: () => void messenger?.setMuted(chat.id, Date.now() + 8 * 3600_000) },
-      { text: "Навсегда", onPress: () => void messenger?.setMuted(chat.id, MUTED_FOREVER) },
-      { text: "Отмена", style: "cancel" },
-    ], { cancelable: true });
+  const act = (fn: () => void) => () => {
+    setSheet(null);
+    fn();
+  };
+  const mutedHint = muted && chat.mutedUntil && chat.mutedUntil < MUTED_FOREVER ? `до ${clockTime(chat.mutedUntil)}` : muted ? "навсегда" : undefined;
+  const mainActions: SheetAction[] = [
+    ...(unread ? [{ icon: "readTicks" as const, label: "Отметить прочитанным", onPress: act(() => void messenger?.markRead(chat.id)) }] : []),
+    ...(chat.archived
+      ? []
+      : [{ icon: "pin" as const, label: chat.pinned ? "Открепить" : "Закрепить наверху", onPress: act(() => void messenger?.setPinned(chat.id, !chat.pinned)) }]),
+    muted
+      ? { icon: "bell" as const, label: "Включить звук", hint: mutedHint ? `Сейчас без звука ${mutedHint}` : undefined, onPress: act(() => void messenger?.setMuted(chat.id, null)) }
+      : { icon: "bellOff" as const, label: "Без звука", hint: "Звонки по-прежнему будут звонить", onPress: () => setSheet("mute") },
+    {
+      icon: "archive" as const,
+      label: chat.archived ? "Вернуть из архива" : "В архив",
+      hint: chat.archived ? undefined : "Вернётся, когда придёт новое сообщение",
+      onPress: act(() => void messenger?.setArchived(chat.id, !chat.archived)),
+    },
+  ];
+  const muteActions: SheetAction[] = [
+    { icon: "bellOff", label: "На 1 час", onPress: act(() => void messenger?.setMuted(chat.id, Date.now() + 3600_000)) },
+    { icon: "bellOff", label: "На 8 часов", onPress: act(() => void messenger?.setMuted(chat.id, Date.now() + 8 * 3600_000)) },
+    { icon: "bellOff", label: "На неделю", onPress: act(() => void messenger?.setMuted(chat.id, Date.now() + 7 * 24 * 3600_000)) },
+    { icon: "bellOff", label: "Навсегда", onPress: act(() => void messenger?.setMuted(chat.id, MUTED_FOREVER)) },
+  ];
 
   return (
+    <>
+    <ActionSheet
+      visible={sheet !== null}
+      onClose={() => setSheet(null)}
+      header={
+        <View style={{ alignItems: "center", gap: 6, paddingBottom: 4 }}>
+          <Avatar name={face.title} seed={chat.peerAccountId} size={48} photo={face.photo} />
+        </View>
+      }
+      title={sheet === "mute" ? "Без звука" : face.title}
+      subtitle={sheet === "mute" ? "Уведомлений о сообщениях не будет" : undefined}
+      actions={sheet === "mute" ? muteActions : mainActions}
+    />
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${face.title}${unread ? `, непрочитанных: ${chat.unread}` : ""}`}
@@ -81,5 +111,6 @@ export function ChatRow({ chat, people }: { chat: Conversation; people: Map<stri
         </View>
       </View>
     </Pressable>
+    </>
   );
 }

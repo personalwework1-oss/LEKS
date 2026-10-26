@@ -7,7 +7,7 @@ import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, NavHeader, TextField } from "@/components/ui";
 import { PeoplePicker } from "@/features/PeoplePicker";
 import { nameOf, useConversation, usePeople } from "@/messaging/hooks";
-import { chooseTimer } from "@/features/timer";
+import { TimerSheet } from "@/features/timer";
 import { type GroupMember, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
@@ -23,6 +23,7 @@ export default function GroupInfo() {
   const [title, setTitle] = useState<string | null>(null);
   const [adding, setAdding] = useState<PublicUser[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [timerOpen, setTimerOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
   if (!chat || chat.kind !== "group") return <View style={{ flex: 1, backgroundColor: p.ground }} />;
@@ -122,7 +123,7 @@ export default function GroupInfo() {
           <Pressable
             accessibilityRole="button"
             disabled={!isAdmin}
-            onPress={() => chooseTimer(messenger, chat)}
+            onPress={() => setTimerOpen(true)}
             style={({ pressed }) => ({ padding: 16, borderRadius: 16, backgroundColor: pressed ? p.surfaceMuted : p.surface, flexDirection: "row", alignItems: "center", gap: 12 })}
           >
             <View style={{ flex: 1 }}>
@@ -185,6 +186,7 @@ export default function GroupInfo() {
 
         {chat.left ? null : <Button title="Выйти из группы" variant="ghost" onPress={leave} />}
       </ScrollView>
+      {messenger ? <TimerSheet messenger={messenger} chat={chat} visible={timerOpen} onClose={() => setTimerOpen(false)} /> : null}
     </View>
   );
 }

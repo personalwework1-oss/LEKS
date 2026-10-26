@@ -35,8 +35,9 @@ export default function BackupSettingsScreen() {
       const result = await backupNow(messenger);
       setMessage({ text: `Сохранено: чатов ${result.chats}, сообщений ${result.messages}.` });
       refresh();
-    } catch {
-      setMessage({ text: "Не удалось сохранить. Проверьте интернет и попробуйте ещё раз.", bad: true });
+    } catch (e) {
+      const detail = e instanceof Error ? ` (${e.message.slice(0, 80)})` : "";
+      setMessage({ text: `Не удалось сохранить. Проверьте интернет и попробуйте ещё раз.${detail}`, bad: true });
     } finally {
       setBusy(null);
     }
@@ -81,8 +82,9 @@ export default function BackupSettingsScreen() {
           try {
             const result = await restoreFromBackup(messenger, session.accountId);
             setMessage({ text: result ? `Восстановлено сообщений: ${result.messages}.` : "Копии пока нет." });
-          } catch {
-            setMessage({ text: "Не удалось восстановить: копия сохранена с другим паролем или нет связи.", bad: true });
+          } catch (e) {
+            const detail = e instanceof Error ? ` (${e.message.slice(0, 80)})` : "";
+            setMessage({ text: `Не удалось восстановить: копия сохранена с другим паролем или нет связи.${detail}`, bad: true });
           } finally {
             setBusy(null);
           }

@@ -1723,15 +1723,21 @@ export class Messenger {
     const expected = new Set<string>();
     for (const account of accounts) for (const id of await this.devicesOf(account, fresh)) expected.add(identityOf({ accountId: account, deviceId: id }));
     const current = state.members;
-    const staying = current.filter((m) => expected.has(m)).sort();
-    if (staying[0] !== this.identity) return;
-
     // Only devices of people already in the group: someone just removed (whose leaving
     // has not reached the member list yet) is never brought back.
     const present = new Set(current.map((m) => parseIdentity(m)?.accountId));
     const gone = current.filter((m) => !expected.has(m) && accounts.includes(parseIdentity(m)?.accountId ?? ""));
     const missing = [...expected].filter((m) => !current.includes(m) && present.has(parseIdentity(m)?.accountId));
     if (gone.length === 0 && missing.length === 0) return;
+
+    // Exactly one phone makes the change: the first, in sort order, of those that stay,
+    // preferring people whose devices did not change. A reinstalled phone leaves its old
+    // install in the list for a while; that one is dead, so it must not be the one to act.
+    const staying = current.filter((m) => expected.has(m)).sort();
+    const changing = new Set([...gone, ...missing].map((m) => parseIdentity(m)?.accountId));
+    const steady = staying.filter((m) => !changing.has(parseIdentity(m)?.accountId));
+    const syncer = (steady.length > 0 ? steady : staying)[0];
+    if (syncer !== this.identity) return;
     // Never remove anyone on the strength of a list that may be out of date.
     if (gone.length > 0 && !fresh) return this.doSyncDevices(conversationId, true);
 

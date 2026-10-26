@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActionSheetIOS, Alert, Platform, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { ActionSheet } from "@/components/ActionSheet";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { AppText, Avatar, Button, NavHeader, Screen, TextField } from "@/components/ui";
 import { pickProfilePhoto } from "@/features/attachments";
@@ -22,6 +23,7 @@ export default function ProfileScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState(false);
+  const [photoSheet, setPhotoSheet] = useState(false);
 
   // Fill the form once, from what is saved.
   useEffect(() => {
@@ -50,24 +52,7 @@ export default function ProfileScreen() {
   }
 
   function photoMenu() {
-    const options = ["Выбрать из галереи", "Сделать фото", ...(photo ? ["Удалить фото"] : []), "Отмена"];
-    const act = (index: number) => {
-      if (index === 0) void choose("gallery");
-      else if (index === 1) void choose("camera");
-      else if (photo && index === 2) setPhoto(null);
-    };
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options, cancelButtonIndex: options.length - 1, destructiveButtonIndex: photo ? 2 : undefined },
-        act,
-      );
-    } else {
-      Alert.alert("Фото профиля", undefined, [
-        { text: "Галерея", onPress: () => act(0) },
-        { text: "Камера", onPress: () => act(1) },
-        ...(photo ? [{ text: "Удалить", style: "destructive" as const, onPress: () => act(2) }] : []),
-      ], { cancelable: true });
-    }
+    setPhotoSheet(true);
   }
 
   async function save() {
@@ -127,6 +112,16 @@ export default function ProfileScreen() {
         </AppText>
       ) : null}
       <Button title="Сохранить" onPress={() => void save()} disabled={!canSave} loading={busy} />
+      <ActionSheet
+        visible={photoSheet}
+        onClose={() => setPhotoSheet(false)}
+        title="Фото профиля"
+        actions={[
+          { icon: "image", label: "Выбрать из галереи", onPress: () => (setPhotoSheet(false), void choose("gallery")) },
+          { icon: "camera", label: "Сделать фото", onPress: () => (setPhotoSheet(false), void choose("camera")) },
+          ...(photo ? [{ icon: "trash" as const, label: "Удалить фото", danger: true, onPress: () => (setPhotoSheet(false), setPhoto(null)) }] : []),
+        ]}
+      />
       <PhotoViewer photo={viewing ? photo : null} name={name} onClose={() => setViewing(false)} />
     </Screen>
   );

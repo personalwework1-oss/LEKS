@@ -443,6 +443,15 @@ export default function Chat() {
           <AppText variant="caption" muted style={{ textAlign: "center" }}>
             Пока вы не ответите, он не увидит, что вы прочитали, и не получит ваше фото. Никогда не переводите деньги и не сообщайте коды незнакомым.
           </AppText>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void messenger?.accept(id)}
+            style={({ pressed }) => ({ height: 46, borderRadius: 14, backgroundColor: p.accent, opacity: pressed ? 0.85 : 1, alignItems: "center", justifyContent: "center" })}
+          >
+            <AppText variant="bodyStrong" color={p.onAccent}>
+              Принять и ответить
+            </AppText>
+          </Pressable>
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Pressable
               accessibilityRole="button"
@@ -452,23 +461,20 @@ export default function Chat() {
                   { text: "Заблокировать", style: "destructive", onPress: () => void messenger?.block(chat.peerAccountId) },
                 ])
               }
-              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.surfaceMuted, alignItems: "center", justifyContent: "center" }}
+              style={({ pressed }) => ({ flex: 1, height: 44, borderRadius: 14, backgroundColor: pressed ? p.line : p.surfaceMuted, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 })}
             >
-              <AppText color={p.danger}>Заблокировать</AppText>
+              <AppText color={p.danger} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                Заблокировать
+              </AppText>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               onPress={() => setReporting(true)}
-              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.surfaceMuted, alignItems: "center", justifyContent: "center" }}
+              style={({ pressed }) => ({ flex: 1, height: 44, borderRadius: 14, backgroundColor: pressed ? p.line : p.surfaceMuted, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 })}
             >
-              <AppText color={p.danger}>Пожаловаться</AppText>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void messenger?.accept(id)}
-              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.accent, alignItems: "center", justifyContent: "center" }}
-            >
-              <AppText color={p.onAccent}>Принять</AppText>
+              <AppText color={p.danger} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                Пожаловаться
+              </AppText>
             </Pressable>
           </View>
         </View>

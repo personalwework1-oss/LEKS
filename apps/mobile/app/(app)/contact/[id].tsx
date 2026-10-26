@@ -5,7 +5,7 @@ import { PhotoViewer } from "@/components/PhotoViewer";
 import { AppText, Avatar, Button, IconButton, NavHeader, Screen, TextField } from "@/components/ui";
 import { nameOf, useConversations, usePeople } from "@/messaging/hooks";
 import { ReportSheet } from "@/features/ReportSheet";
-import { chooseTimer } from "@/features/timer";
+import { TimerSheet } from "@/features/timer";
 import { MAX_DISPLAY_NAME, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
@@ -26,6 +26,7 @@ export default function ContactScreen() {
   const [draft, setDraft] = useState("");
   const [viewing, setViewing] = useState(false);
   const [reporting, setReporting] = useState(false);
+  const [timerOpen, setTimerOpen] = useState(false);
 
   async function saveNickname(value: string | null) {
     await messenger?.setNickname(id, value);
@@ -83,7 +84,7 @@ export default function ContactScreen() {
       {chat && !chat.left && messenger ? (
         <Pressable
           accessibilityRole="button"
-          onPress={() => chooseTimer(messenger, chat)}
+          onPress={() => setTimerOpen(true)}
           style={({ pressed }) => ({ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: pressed ? p.surfaceMuted : p.surface, flexDirection: "row", alignItems: "center", gap: 12 })}
         >
           <AppText style={{ flex: 1 }}>Исчезающие сообщения</AppText>
@@ -163,6 +164,7 @@ export default function ContactScreen() {
           Alert.alert("Жалоба отправлена", choice.block ? `Спасибо. ${shown} заблокирован.` : "Спасибо, мы её рассмотрим.");
         }}
       />
+      {chat && messenger ? <TimerSheet messenger={messenger} chat={chat} visible={timerOpen} onClose={() => setTimerOpen(false)} /> : null}
       <PhotoViewer photo={viewing ? (person?.photo ?? null) : null} name={shown} onClose={() => setViewing(false)} />
     </Screen>
   );

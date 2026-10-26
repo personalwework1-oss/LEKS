@@ -61,7 +61,9 @@ export default function RestoreStep() {
         setError(password ? "Пароль не подходит к этой копии." : null);
       } else {
         setPhase(before);
-        setError("Не удалось восстановить. Проверьте интернет и попробуйте ещё раз.");
+        // The technical reason in small print helps when something goes wrong in testing.
+        const detail = e instanceof Error ? e.message.slice(0, 80) : "";
+        setError(`Не удалось восстановить. Проверьте интернет и попробуйте ещё раз.${detail ? `\n(${detail})` : ""}`);
       }
     }
   }
@@ -84,7 +86,10 @@ export default function RestoreStep() {
           Переписка восстановлена
         </AppText>
         <AppText muted style={{ marginTop: 10 }}>
-          {`Чатов: ${phase.chats}, сообщений: ${phase.messages}. Читать можно сразу. Писать — как только телефоны собеседников подключат это устройство: это происходит само, когда они в сети.`}
+          {`Чатов: ${phase.chats}, сообщений: ${phase.messages}. Читать можно сразу. Новые сообщения уйдут, как только телефоны собеседников подключат это устройство — это происходит само, когда они откроют LEKS.`}
+        </AppText>
+        <AppText muted style={{ marginTop: 10 }}>
+          Если вы переустановили приложение, старая установка ещё числится среди ваших устройств. Отключите её в «Настройки → Устройства».
         </AppText>
         <View style={{ flex: 1 }} />
         <Button title="Дальше" onPress={next} />
