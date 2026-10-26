@@ -106,7 +106,7 @@ export default function Chats() {
                 </AppText>
                 <AppText muted>{archived.length}</AppText>
               </Pressable>
-            ) : null
+            ) : undefined
           }
         />
       ) : (
