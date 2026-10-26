@@ -1430,7 +1430,7 @@ export class Messenger {
     return this.store.person(accountId);
   }
 
-  private async introPayload(): Promise<Payload> {
+  private async introPayload(): Promise<Extract<Payload, { type: "intro" }>> {
     const mine = await this.store.person(this.me.accountId);
     return { v: 1, type: "intro", accountId: this.me.accountId, displayName: mine?.displayName ?? this.me.displayName, username: this.me.username };
   }
