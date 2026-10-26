@@ -151,9 +151,16 @@ function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Per
           </AppText>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <AppText muted numberOfLines={1} style={{ flex: 1, fontSize: 15, lineHeight: 20 }}>
-            {chat.lastText ?? (chat.username ? `@${chat.username}` : "Пока нет сообщений")}
-          </AppText>
+          {chat.draft ? (
+            <AppText numberOfLines={1} style={{ flex: 1, fontSize: 15, lineHeight: 20 }} color={p.textMuted}>
+              <Text style={{ color: p.danger }}>Черновик: </Text>
+              {chat.draft}
+            </AppText>
+          ) : (
+            <AppText muted numberOfLines={1} style={{ flex: 1, fontSize: 15, lineHeight: 20 }}>
+              {chat.lastText ?? (chat.username ? `@${chat.username}` : "Пока нет сообщений")}
+            </AppText>
+          )}
           {unread ? (
             <View style={{ minWidth: 22, height: 22, paddingHorizontal: 7, borderRadius: 11, backgroundColor: p.accent, alignItems: "center", justifyContent: "center" }}>
               <Text style={{ fontFamily: fonts.semibold, fontSize: 12, color: p.onAccent }}>{chat.unread}</Text>

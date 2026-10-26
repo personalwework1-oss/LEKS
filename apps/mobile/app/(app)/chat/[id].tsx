@@ -13,7 +13,7 @@ import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { callText, MessengerError, previewOf } from "@/messaging/messenger";
 import { chatFace, nameOf, useConversation, useConversations, useMessages, usePeople, useTyping } from "@/messaging/hooks";
-import { type CallEvent, type Conversation, type GeoPoint, type Message, type Person, REACTIONS } from "@/messaging/types";
+import { type CallEvent, type Conversation, type GeoPoint, type Message, type Person, REACTIONS, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -38,6 +38,50 @@ export default function Chat() {
   const [recording, setRecording] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
+  const list = useRef<FlatList<Row>>(null);
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Message[]>([]);
+  const [highlight, setHighlight] = useState<string | null>(null);
+
+  // The unsent text comes back when the chat is opened again.
+  const draftLoaded = useRef(false);
+  const latestDraft = useRef("");
+  useEffect(() => {
+    if (draftLoaded.current || !chat) return;
+    draftLoaded.current = true;
+    if (chat.draft) setDraft(chat.draft);
+  }, [chat]);
+  useEffect(() => {
+    if (mode?.kind !== "edit") latestDraft.current = draft;
+  }, [draft, mode]);
+  useEffect(() => () => void messenger?.setDraft(id, latestDraft.current).catch(() => undefined), [messenger, id]);
+
+  // Search in this chat as the person types.
+  useEffect(() => {
+    if (!searching || !messenger) return;
+    let alive = true;
+    const timer = setTimeout(() => void messenger.search(id, query).then((found) => alive && setResults(found)), 200);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [searching, query, messenger, id]);
+
+  function closeSearch() {
+    setSearching(false);
+    setQuery("");
+    setResults([]);
+  }
+
+  function jumpTo(message: Message) {
+    closeSearch();
+    const index = rows.findIndex((row) => row.kind === "message" && row.message.id === message.id);
+    if (index < 0) return;
+    list.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
+    setHighlight(message.id);
+    setTimeout(() => setHighlight((current) => (current === message.id ? null : current)), 1800);
+  }
 
   // Opening the chat marks it read; so does every new message while it is open.
   useEffect(() => {
@@ -159,6 +203,7 @@ export default function Chat() {
         : chat?.username
           ? `@${chat.username}`
           : "защищённый чат";
+  const timerNote = chat?.timer ? ` · ⏱ ${timerLabel(chat.timer)}` : "";
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: p.chatGround }} behavior="padding">
@@ -175,6 +220,22 @@ export default function Chat() {
           gap: 10,
         }}
       >
+        {searching ? (
+          <>
+            <IconButton icon="back" label="Закрыть поиск" tone="plain" onPress={closeSearch} />
+            <TextInput
+              autoFocus
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Поиск в чате"
+              placeholderTextColor={p.textSubtle}
+              accessibilityLabel="Поиск в чате"
+              returnKeyType="search"
+              style={{ flex: 1, height: 42, borderRadius: 12, backgroundColor: p.surfaceMuted, paddingHorizontal: 12, fontFamily: fonts.regular, fontSize: 16, color: p.text }}
+            />
+          </>
+        ) : (
+        <>
         <IconButton icon="back" label="Назад к чатам" tone="plain" onPress={() => router.back()} />
         <Pressable
           disabled={!chat}
@@ -195,21 +256,62 @@ export default function Chat() {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             {typing ? null : <Icon name="lock" size={12} color={p.textMuted} strokeWidth={2.4} />}
             <AppText variant="caption" color={typing ? p.accentText : p.textMuted} numberOfLines={1} accessibilityLiveRegion="polite">
-              {status}
+              {typing ? status : `${status}${timerNote}`}
             </AppText>
           </View>
         </View>
         </Pressable>
+        <IconButton icon="search" label="Поиск в чате" tone="plain" onPress={() => setSearching(true)} />
         {chat && !chat.left && !chat.rejoining ? (
           <>
             <IconButton icon="phone" label="Аудиозвонок" tone="plain" onPress={() => void calls?.start(id, false)} />
             <IconButton icon="video" label="Видеозвонок" tone="plain" onPress={() => void calls?.start(id, true)} />
           </>
         ) : null}
+        </>
+        )}
       </View>
 
+      {searching && query.trim() ? (
+        <View style={{ flex: 1, backgroundColor: p.surface }}>
+          <AppText variant="caption" muted style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+            {results.length === 0 ? "Ничего не найдено" : `Найдено: ${results.length}`}
+          </AppText>
+          <FlatList
+            data={results}
+            keyExtractor={(m) => m.id}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => jumpTo(item)}
+                style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: 10, borderTopWidth: 1, borderTopColor: p.separator, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+              >
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <AppText variant="bodyStrong" style={{ flex: 1 }} numberOfLines={1}>
+                    {item.outgoing ? "Вы" : isGroup ? (names.get(item.senderAccountId) ?? "Участник") : title}
+                  </AppText>
+                  <AppText variant="caption" muted>
+                    {`${dayLabel(item.sentAt)}, ${clockTime(item.sentAt)}`}
+                  </AppText>
+                </View>
+                <AppText muted numberOfLines={2}>
+                  {previewOf(item)}
+                </AppText>
+              </Pressable>
+            )}
+          />
+        </View>
+      ) : null}
+
       <FlatList
+        ref={list}
         inverted
+        style={searching && query.trim() ? { display: "none" } : undefined}
+        onScrollToIndexFailed={(info) => {
+          list.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+          setTimeout(() => list.current?.scrollToIndex({ index: info.index, viewPosition: 0.5 }), 100);
+        }}
         data={rows}
         keyExtractor={(row) => row.key}
         contentContainerStyle={{ padding: 12, gap: 6 }}
@@ -221,6 +323,8 @@ export default function Chat() {
                 {item.label}
               </AppText>
             </View>
+          ) : item.message.event?.type === "timer" ? (
+            <TimerNote message={item.message} name={item.message.outgoing ? "Вы" : isGroup ? (names.get(item.message.senderAccountId) ?? "Участник") : title} />
           ) : item.message.event?.type === "device" ? (
             <DeviceNote
               message={item.message}
@@ -230,6 +334,7 @@ export default function Chat() {
             <CallNote message={item.message} onCall={(video) => void calls?.start(id, video)} />
           ) : (
             <Bubble
+              highlighted={highlight === item.message.id}
               message={item.message}
               quoted={item.message.replyTo ? (byId.get(item.message.replyTo) ?? "missing") : null}
               myAccountId={session?.accountId ?? ""}
@@ -517,7 +622,9 @@ function Bubble({
   onDownload,
   onRetry,
   showSender,
+  highlighted,
 }: {
+  highlighted?: boolean;
   message: Message;
   showSender: boolean;
   /** The message this one answers; "missing" if it is not on this phone. */
@@ -549,7 +656,7 @@ function Bubble({
     : `${out ? "Вы" : peerName}: ${previewOf(message)}. ${clockTime(message.sentAt)}.${message.editedAt ? " Изменено." : ""} ${STATUS_LABEL[message.status]}`;
 
   return (
-    <View style={{ alignItems: out ? "flex-end" : "flex-start" }}>
+    <View style={{ alignItems: out ? "flex-end" : "flex-start", borderRadius: 12, backgroundColor: highlighted ? p.accentSoft : "transparent" }}>
       <Pressable
         onLongPress={message.deleted ? undefined : onLongPress}
         delayLongPress={300}
@@ -620,6 +727,11 @@ function Bubble({
           {message.editedAt && !message.deleted ? (
             <AppText variant="caption" color={meta} style={{ fontSize: 12, lineHeight: 16 }}>
               изменено
+            </AppText>
+          ) : null}
+          {message.expiresAt ? (
+            <AppText variant="caption" color={meta} style={{ fontSize: 11, lineHeight: 16 }} accessibilityLabel="Исчезающее сообщение">
+              ⏱
             </AppText>
           ) : null}
           <AppText variant="caption" color={meta} style={{ fontSize: 12, lineHeight: 16 }}>
@@ -799,6 +911,22 @@ function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: (
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+/** "Анна включила исчезающие сообщения: 1 неделя". */
+function TimerNote({ message, name }: { message: Message; name: string }) {
+  const p = usePalette();
+  const seconds = message.event?.type === "timer" ? message.event.seconds : 0;
+  const text = seconds
+    ? `${name}: исчезающие сообщения — ${timerLabel(seconds).toLowerCase()}. Новые сообщения удалятся у всех через это время.`
+    : `${name}: исчезающие сообщения выключены.`;
+  return (
+    <View style={{ alignSelf: "center", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, marginVertical: 4, backgroundColor: p.surface, maxWidth: 320 }}>
+      <AppText variant="caption" muted style={{ textAlign: "center" }}>
+        {`⏱ ${text}`}
+      </AppText>
+    </View>
   );
 }
 

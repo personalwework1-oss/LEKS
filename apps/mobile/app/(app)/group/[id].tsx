@@ -7,7 +7,8 @@ import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, NavHeader, TextField } from "@/components/ui";
 import { PeoplePicker } from "@/features/PeoplePicker";
 import { nameOf, useConversation, usePeople } from "@/messaging/hooks";
-import type { GroupMember } from "@/messaging/types";
+import { chooseTimer } from "@/features/timer";
+import { type GroupMember, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -115,6 +116,25 @@ export default function GroupInfo() {
               />
             </View>
           )
+        ) : null}
+
+        {!chat.left && messenger ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={!isAdmin}
+            onPress={() => chooseTimer(messenger, chat)}
+            style={({ pressed }) => ({ padding: 16, borderRadius: 16, backgroundColor: pressed ? p.surfaceMuted : p.surface, flexDirection: "row", alignItems: "center", gap: 12 })}
+          >
+            <View style={{ flex: 1 }}>
+              <AppText>Исчезающие сообщения</AppText>
+              {isAdmin ? null : (
+                <AppText variant="caption" muted>
+                  Меняют админы
+                </AppText>
+              )}
+            </View>
+            <AppText muted>{timerLabel(chat.timer ?? 0)}</AppText>
+          </Pressable>
         ) : null}
 
         <View style={{ borderRadius: 16, backgroundColor: p.surface, overflow: "hidden" }}>

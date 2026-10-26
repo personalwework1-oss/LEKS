@@ -7,6 +7,9 @@ export class MemoryStore implements MessageStore {
   private readonly queue = new Map<string, OutboxItem>();
   private readonly persons = new Map<string, Person>();
 
+  async expired(now: number) {
+    return [...this.msgs.values()].filter((m) => m.expiresAt != null && m.expiresAt <= now).map((m) => this.copy(m));
+  }
   async people() {
     return [...this.persons.values()].map((p) => ({ ...p }));
   }

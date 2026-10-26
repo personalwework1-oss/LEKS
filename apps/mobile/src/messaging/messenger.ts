@@ -19,6 +19,8 @@ import {
   type Payload,
   type Person,
   REACTIONS,
+  TIMER_CHOICES,
+  timerLabel,
 } from "./types";
 
 /** The part of the server connection the messenger uses (the Realtime client in the app). */
@@ -95,6 +97,10 @@ export function parseIdentity(identity: string): { accountId: string; deviceId: 
 
 const isString = (v: unknown): v is string => typeof v === "string";
 
+/** A disappearing-message time on a message: up to a little over a month. */
+const MAX_TTL = 31 * 24 * 3600;
+const isTtl = (v: unknown) => v === undefined || (typeof v === "number" && Number.isInteger(v) && v > 0 && v <= MAX_TTL);
+
 function isGeoPoint(v: unknown): v is GeoPoint {
   if (!v || typeof v !== "object") return false;
   const { lat, lon, accuracy } = v as Record<string, unknown>;
@@ -137,7 +143,8 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         typeof value.sentAt === "number" &&
         (value.replyTo === undefined || isString(value.replyTo)) &&
         (value.location === undefined || isGeoPoint(value.location)) &&
-        (value.forwarded === undefined || typeof value.forwarded === "boolean")
+        (value.forwarded === undefined || typeof value.forwarded === "boolean") &&
+        isTtl(value.ttl)
         ? (value as Payload)
         : null;
     case "receipt":
@@ -161,11 +168,14 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         (value.duration === undefined || typeof value.duration === "number") &&
         (value.waveform === undefined ||
           (Array.isArray(value.waveform) && value.waveform.length <= MAX_WAVEFORM && value.waveform.every((n: unknown) => typeof n === "number"))) &&
-        (value.forwarded === undefined || typeof value.forwarded === "boolean")
+        (value.forwarded === undefined || typeof value.forwarded === "boolean") &&
+        isTtl(value.ttl)
         ? (value as Payload)
         : null;
     case "edit":
       return isString(value.id) && isString(value.text) && typeof value.editedAt === "number" ? (value as Payload) : null;
+    case "timer":
+      return (TIMER_CHOICES as readonly number[]).includes(value.seconds as number) && typeof value.at === "number" ? (value as Payload) : null;
     case "delete":
       return isString(value.id) ? (value as Payload) : null;
     case "reaction":
@@ -220,6 +230,7 @@ function filePayload(message: Message): Payload {
     ...(sent.duration ? { duration: sent.duration } : {}),
     ...(sent.waveform ? { waveform: sent.waveform.map((n) => Math.round(n * 100) / 100) } : {}),
     ...(message.forwarded ? { forwarded: true } : {}),
+    ...ttlOf(message),
   };
 }
 
@@ -238,7 +249,19 @@ function payloadOf(message: Message): Payload | null {
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.location ? { location: message.location } : {}),
     ...(message.forwarded ? { forwarded: true } : {}),
+    ...ttlOf(message),
   };
+}
+
+/** The disappearing time a message was sent with, so every phone deletes it at the same moment. */
+function ttlOf(message: Message): { ttl?: number } {
+  if (!message.expiresAt) return {};
+  const ttl = Math.round((message.expiresAt - message.sentAt) / 1000);
+  return ttl > 0 ? { ttl } : {};
+}
+
+function expiryOf(sentAt: number, ttl: number | undefined): number | null {
+  return ttl ? sentAt + ttl * 1000 : null;
 }
 
 function directChat(id: string, peerAccountId: string, at: number): Conversation {
@@ -275,7 +298,8 @@ const CALL_TEXT: Record<CallOutcome, [string, string]> = {
 /** "Пропущенный звонок", "Исходящий видеозвонок · 2:15" and so on. */
 export function callText(m: Message): string {
   const event = m.event!;
-  if (event.type !== "call") return "Новое устройство";
+  if (event.type === "device") return "Новое устройство";
+  if (event.type === "timer") return event.seconds ? `Исчезающие сообщения: ${timerLabel(event.seconds).toLowerCase()}` : "Исчезающие сообщения выключены";
   let text = CALL_TEXT[event.outcome][m.outgoing ? 0 : 1];
   if (event.video) text = text.replace("звонок", "видеозвонок");
   if (event.outcome === "ended" && event.duration > 0) {
@@ -289,6 +313,7 @@ export function previewOf(m: Message | null): string | null {
   if (!m) return null;
   if (m.event?.type === "call") return `📞 ${callText(m)}`;
   if (m.event?.type === "device") return "🔒 Новое устройство в чате";
+  if (m.event?.type === "timer") return `⏱ ${callText(m)}`;
   if (m.deleted) return "Сообщение удалено";
   if (m.location && !m.text) return "📍 Геопозиция";
   if (m.attachment && !m.text) {
@@ -534,6 +559,16 @@ export class Messenger {
         }
         return null;
 
+      case "timer": {
+        // Direct chats: either person. Groups: admins.
+        const byAdmin = isGroup && conversation.members.some((m) => m.accountId === sender.accountId && m.role === "admin");
+        if (isGroup && !byAdmin) return null;
+        if ((conversation.timer ?? 0) === payload.seconds) return null;
+        await this.store.saveConversation({ ...conversation, timer: payload.seconds });
+        await this.noteTimer(conversation.id, sender.accountId, payload.seconds, payload.at);
+        return null;
+      }
+
       case "profile": {
         const known = await this.store.person(sender.accountId);
         if (known && payload.version <= known.version) return null;
@@ -586,6 +621,8 @@ export class Messenger {
       }
 
       case "text": {
+        // Already past its disappearing time (this phone was offline): never shown.
+        if (payload.ttl && payload.sentAt + payload.ttl * 1000 <= this.now()) return null;
         const added = await this.store.addMessage({
           id: payload.id,
           conversationId: conversation.id,
@@ -601,6 +638,7 @@ export class Messenger {
           attachment: null,
           location: payload.location ? { lat: payload.location.lat, lon: payload.location.lon, accuracy: payload.location.accuracy } : null,
           forwarded: payload.forwarded === true,
+          expiresAt: expiryOf(payload.sentAt, payload.ttl),
         });
         if (!added) return null;
         // A message I sent from another of my phones is not unread and needs no receipt.
@@ -616,6 +654,7 @@ export class Messenger {
       }
 
       case "file": {
+        if (payload.ttl && payload.sentAt + payload.ttl * 1000 <= this.now()) return null;
         const message: Message = {
           id: payload.id,
           conversationId: conversation.id,
@@ -644,6 +683,7 @@ export class Messenger {
             state: "remote",
           },
           forwarded: payload.forwarded === true,
+          expiresAt: expiryOf(payload.sentAt, payload.ttl),
         };
         if (!(await this.store.addMessage(message))) return null;
         if (!mine) this.stopTyping(conversation.id);
@@ -847,6 +887,7 @@ export class Messenger {
       attachment: { ...original, localUri, state: localUri ? "sent" : "remote" },
       forwarded: true,
     };
+    message.expiresAt = expiryOf(message.sentAt, target.timer || undefined);
     await this.store.addMessage(message);
     await this.store.saveConversation({ ...target, lastText: previewOf(message), lastAt: message.sentAt });
     if (target.rejoining) {
@@ -892,10 +933,11 @@ export class Messenger {
       location: content.location ?? null,
       forwarded: !!content.forwarded,
     };
+    message.expiresAt = expiryOf(message.sentAt, conversation.timer || undefined);
     const payload = payloadOf(message)!;
 
     await this.store.addMessage(message);
-    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt });
+    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt, draft: null });
     this.typingSentAt.delete(conversationId);
     if (conversation.rejoining) {
       // Restored phone not back in the chat yet: kept as "sending" and sent the moment it is.
@@ -920,6 +962,7 @@ export class Messenger {
     if (conversation.left) throw new MessengerError("not_allowed");
 
     const id = this.uuid();
+    const now = this.now();
     const localUri = this.files.mediaUri(id, file.name);
     await this.files.copy(file.uri, localUri);
     const message: Message = {
@@ -928,7 +971,7 @@ export class Messenger {
       senderAccountId: this.me.accountId,
       outgoing: true,
       text: caption.slice(0, MAX_TEXT),
-      sentAt: this.now(),
+      sentAt: now,
       status: "sending",
       replyTo,
       editedAt: null,
@@ -949,6 +992,7 @@ export class Messenger {
         localUri,
         state: "uploading",
       },
+      expiresAt: expiryOf(now, conversation.timer || undefined),
     };
     await this.store.addMessage(message);
     await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt });
@@ -1205,6 +1249,83 @@ export class Messenger {
       }
     }
     return true;
+  }
+
+  // ---- disappearing messages and drafts ------------------------------------
+
+  /**
+   * Turns disappearing messages on or off for a chat, on every phone in it.
+   * Only messages sent after this disappear (as in other messengers).
+   */
+  async setTimer(conversationId: string, seconds: number): Promise<void> {
+    if (!(TIMER_CHOICES as readonly number[]).includes(seconds)) throw new MessengerError("not_allowed");
+    const chat = await this.store.conversation(conversationId);
+    if (!chat || chat.left) throw new MessengerError("not_allowed");
+    if (chat.kind === "group" && !chat.members.some((m) => m.accountId === this.me.accountId && m.role === "admin")) throw new MessengerError("not_allowed");
+    if ((chat.timer ?? 0) === seconds) return;
+    const at = this.now();
+    await this.store.saveConversation({ ...chat, timer: seconds });
+    await this.noteTimer(conversationId, this.me.accountId, seconds, at);
+    await this.sendPayload(conversationId, { v: 1, type: "timer", seconds, at }, null);
+  }
+
+  private async noteTimer(conversationId: string, accountId: string, seconds: number, at: number): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat) return;
+    const message: Message = {
+      id: this.uuid(),
+      conversationId,
+      senderAccountId: accountId,
+      outgoing: accountId === this.me.accountId,
+      text: "",
+      sentAt: Math.max(at, chat.lastAt),
+      status: "read",
+      replyTo: null,
+      editedAt: null,
+      deleted: false,
+      reactions: {},
+      attachment: null,
+      event: { type: "timer", seconds },
+    };
+    await this.store.addMessage(message);
+    await this.store.saveConversation({ ...chat, lastText: previewOf(message), lastAt: message.sentAt });
+    this.changed();
+  }
+
+  /** Deletes messages whose time is up (and their files). Called every minute and when the app opens. */
+  async purgeExpired(): Promise<number> {
+    const expired = await this.store.expired(this.now());
+    if (expired.length === 0) return 0;
+    const chats = new Set<string>();
+    for (const message of expired) {
+      if (message.attachment?.localUri) await this.files?.remove(message.attachment.localUri).catch(() => undefined);
+      await this.store.removeMessage(message.id);
+      chats.add(message.conversationId);
+    }
+    for (const id of chats) {
+      const unreadGone = expired.filter((m) => m.conversationId === id && !m.outgoing && m.status === "received").length;
+      await this.refreshPreview(id, unreadGone);
+    }
+    this.changed();
+    return expired.length;
+  }
+
+  /** Keeps unsent text for the chat (only on this phone). */
+  async setDraft(conversationId: string, text: string): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    const draft = text.trim() ? text.slice(0, MAX_TEXT) : null;
+    if (!chat || (chat.draft ?? null) === draft) return;
+    await this.store.saveConversation({ ...chat, draft });
+    this.changed();
+  }
+
+  /** Messages in the chat containing the text (any case), newest first. */
+  async search(conversationId: string, query: string): Promise<Message[]> {
+    const needle = query.trim().toLocaleLowerCase("ru");
+    if (!needle) return [];
+    return (await this.store.messages(conversationId, Number.MAX_SAFE_INTEGER))
+      .filter((m) => !m.deleted && !m.event && (m.text.toLocaleLowerCase("ru").includes(needle) || (m.attachment?.name ?? "").toLocaleLowerCase("ru").includes(needle)))
+      .reverse();
   }
 
   // ---- profiles --------------------------------------------------------------

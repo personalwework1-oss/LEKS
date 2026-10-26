@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   version INTEGER NOT NULL DEFAULT 0,
   left_group INTEGER NOT NULL DEFAULT 0,
   rejoining INTEGER NOT NULL DEFAULT 0,
-  pinned INTEGER NOT NULL DEFAULT 0
+  pinned INTEGER NOT NULL DEFAULT 0,
+  timer INTEGER NOT NULL DEFAULT 0,
+  draft TEXT
 );
 CREATE INDEX IF NOT EXISTS conversations_peer ON conversations (peer_account_id);
 CREATE TABLE IF NOT EXISTS messages (
@@ -34,7 +36,8 @@ CREATE TABLE IF NOT EXISTS messages (
   attachment TEXT,
   event TEXT,
   location TEXT,
-  forwarded INTEGER NOT NULL DEFAULT 0
+  forwarded INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation_id, sent_at);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -76,6 +79,9 @@ const UPGRADES: string[] = [
   `ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE messages ADD COLUMN location TEXT;
    ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE conversations ADD COLUMN timer INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE conversations ADD COLUMN draft TEXT;
+   ALTER TABLE messages ADD COLUMN expires_at INTEGER;`,
 ];
 
 interface PersonRow {
@@ -112,6 +118,8 @@ interface ConversationRow {
   left_group: number;
   rejoining: number;
   pinned: number;
+  timer: number;
+  draft: string | null;
 }
 
 interface MessageRow {
@@ -130,6 +138,7 @@ interface MessageRow {
   event: string | null;
   location: string | null;
   forwarded: number;
+  expires_at: number | null;
 }
 
 interface OutboxRow {
@@ -156,6 +165,8 @@ const toConversation = (r: ConversationRow): Conversation => ({
   left: r.left_group === 1,
   rejoining: r.rejoining === 1,
   pinned: r.pinned === 1,
+  timer: r.timer ?? 0,
+  draft: r.draft,
 });
 
 function parseMembers(json: string): GroupMember[] {
@@ -183,6 +194,7 @@ const toMessage = (r: MessageRow): Message => ({
   event: r.event ? (JSON.parse(r.event) as ChatEvent) : null,
   location: r.location ? (JSON.parse(r.location) as GeoPoint) : null,
   forwarded: r.forwarded === 1,
+  expiresAt: r.expires_at,
 });
 
 function parseAttachment(json: string | null): Attachment | null {
@@ -222,6 +234,8 @@ export class SqliteStore implements MessageStore {
     if (!fresh) {
       for (let i = version; i < UPGRADES.length; i++) await db.execAsync(UPGRADES[i]!);
     }
+    // Indexes on columns that older databases get from UPGRADES, so only after them.
+    await db.execAsync("CREATE INDEX IF NOT EXISTS messages_expiry ON messages (expires_at) WHERE expires_at IS NOT NULL;");
     await db.execAsync(`PRAGMA user_version = ${UPGRADES.length}`);
     return new SqliteStore(db);
   }
@@ -246,13 +260,13 @@ export class SqliteStore implements MessageStore {
 
   async saveConversation(c: Conversation) {
     await this.db.runAsync(
-      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned, timer, draft)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET peer_account_id = excluded.peer_account_id, title = excluded.title,
          username = excluded.username, last_text = excluded.last_text, last_at = excluded.last_at, unread = excluded.unread,
          kind = excluded.kind, members = excluded.members, version = excluded.version, left_group = excluded.left_group,
-         rejoining = excluded.rejoining, pinned = excluded.pinned`,
-      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0],
+         rejoining = excluded.rejoining, pinned = excluded.pinned, timer = excluded.timer, draft = excluded.draft`,
+      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0, c.timer ?? 0, c.draft ?? null],
     );
   }
 
@@ -271,8 +285,8 @@ export class SqliteStore implements MessageStore {
 
   async addMessage(m: Message) {
     const result = await this.db.runAsync(
-      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions, attachment, event, location, forwarded)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, conversation_id, sender_account_id, outgoing, text, sent_at, status, reply_to, edited_at, deleted, reactions, attachment, event, location, forwarded, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         m.id,
         m.conversationId,
@@ -289,6 +303,7 @@ export class SqliteStore implements MessageStore {
         m.event ? JSON.stringify(m.event) : null,
         m.location ? JSON.stringify(m.location) : null,
         m.forwarded ? 1 : 0,
+        m.expiresAt ?? null,
       ],
     );
     return result.changes > 0;
@@ -331,6 +346,11 @@ export class SqliteStore implements MessageStore {
 
   async markRead(conversationId: string) {
     await this.db.runAsync("UPDATE conversations SET unread = 0 WHERE id = ?", [conversationId]);
+  }
+
+  async expired(now: number) {
+    const rows = await this.db.getAllAsync<MessageRow>("SELECT * FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?", [now]);
+    return rows.map(toMessage);
   }
 
   async people() {

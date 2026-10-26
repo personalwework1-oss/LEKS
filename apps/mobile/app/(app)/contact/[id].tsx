@@ -4,7 +4,8 @@ import { Pressable, View } from "react-native";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { AppText, Avatar, Button, IconButton, NavHeader, Screen, TextField } from "@/components/ui";
 import { nameOf, useConversations, usePeople } from "@/messaging/hooks";
-import { MAX_DISPLAY_NAME } from "@/messaging/types";
+import { chooseTimer } from "@/features/timer";
+import { MAX_DISPLAY_NAME, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -75,6 +76,17 @@ export default function ContactScreen() {
           </AppText>
           <AppText>{person.about}</AppText>
         </View>
+      ) : null}
+
+      {chat && !chat.left && messenger ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => chooseTimer(messenger, chat)}
+          style={({ pressed }) => ({ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: pressed ? p.surfaceMuted : p.surface, flexDirection: "row", alignItems: "center", gap: 12 })}
+        >
+          <AppText style={{ flex: 1 }}>Исчезающие сообщения</AppText>
+          <AppText muted>{timerLabel(chat.timer ?? 0)}</AppText>
+        </Pressable>
       ) : null}
 
       <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: p.surface, gap: 12 }}>

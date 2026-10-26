@@ -1059,6 +1059,49 @@ describe("location, forwarding and pinning", () => {
   });
 });
 
+describe("disappearing messages, drafts and search", () => {
+  it("turns disappearing messages on for both, and deletes new messages on both after the time", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await a.messenger.send(chatId, "останется");
+    await a.messenger.setTimer(chatId, 24 * 3600);
+    await a.messenger.send(chatId, "исчезнет");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.conversation(chatId))?.timer).toBe(24 * 3600);
+    const texts = (await b.messenger.messages(chatId)).map((m) => m.text || m.event?.type);
+    expect(texts).toEqual(["останется", "timer", "исчезнет"]);
+
+    server.clock += 24 * 3600 * 1000 + 1;
+    await a.messenger.purgeExpired();
+    await b.messenger.purgeExpired();
+    expect((await a.messenger.messages(chatId)).map((m) => m.text || m.event?.type)).toEqual(["останется", "timer"]);
+    expect((await b.messenger.messages(chatId)).map((m) => m.text || m.event?.type)).toEqual(["останется", "timer"]);
+
+    await b.messenger.setTimer(chatId, 0);
+    await b.messenger.flush();
+    await a.deliver();
+    expect((await a.messenger.conversation(chatId))?.timer).toBe(0);
+    await expect(a.messenger.setTimer(chatId, 12345)).rejects.toThrow("not_allowed");
+  });
+
+  it("keeps a draft per chat until it is sent", async () => {
+    const { a, chatId } = await chatting();
+    await a.messenger.setDraft(chatId, "недописанное");
+    expect((await a.messenger.conversation(chatId))?.draft).toBe("недописанное");
+    await a.messenger.send(chatId, "готово");
+    expect((await a.messenger.conversation(chatId))?.draft).toBeNull();
+  });
+
+  it("finds messages in a chat regardless of case", async () => {
+    const { a, chatId } = await chatting();
+    await a.messenger.send(chatId, "Встреча в Берлине");
+    await a.messenger.send(chatId, "ок");
+    await a.messenger.send(chatId, "берлин подходит");
+    expect((await a.messenger.search(chatId, "БЕРЛИН")).map((m) => m.text)).toEqual(["берлин подходит", "Встреча в Берлине"]);
+    expect(await a.messenger.search(chatId, "  ")).toEqual([]);
+  });
+});
+
 describe("identity", () => {
   it("round-trips account and device ids", () => {
     expect(parseIdentity(identityOf({ accountId: "a", deviceId: "d" }))).toEqual({ accountId: "a", deviceId: "d" });

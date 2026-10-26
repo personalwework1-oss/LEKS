@@ -30,6 +30,10 @@ export interface Conversation {
   rejoining?: boolean;
   /** Kept at the top of the list (only on this phone). */
   pinned?: boolean;
+  /** Disappearing messages: new messages are deleted on every phone this many seconds after sending (0 = off). */
+  timer?: number;
+  /** Unsent text in the composer (only on this phone). */
+  draft?: string | null;
 }
 
 /**
@@ -65,6 +69,8 @@ export interface Message {
   location?: GeoPoint | null;
   /** Forwarded from another chat (who wrote it first is not shown, like in other messengers). */
   forwarded?: boolean;
+  /** Disappearing messages: when it is deleted on this phone (ms). */
+  expiresAt?: number | null;
   /** A note in the chat about a call (kept only on this phone). */
   event?: ChatEvent | null;
 }
@@ -91,7 +97,23 @@ export interface DeviceEvent {
   type: "device";
 }
 
-export type ChatEvent = CallEvent | DeviceEvent;
+/** Someone turned disappearing messages on or off (seconds; 0 = off). */
+export interface TimerEvent {
+  type: "timer";
+  seconds: number;
+}
+
+export type ChatEvent = CallEvent | DeviceEvent | TimerEvent;
+
+/** The choices for disappearing messages, in seconds. */
+export const TIMER_CHOICES = [0, 24 * 3600, 7 * 24 * 3600, 30 * 24 * 3600] as const;
+
+export function timerLabel(seconds: number): string {
+  if (!seconds) return "Выкл.";
+  if (seconds <= 24 * 3600) return "1 день";
+  if (seconds <= 7 * 24 * 3600) return "1 неделя";
+  return "1 месяц";
+}
 
 export type AttachmentKind = "image" | "video" | "file" | "voice";
 
@@ -178,6 +200,8 @@ export interface MessageStore {
   /** Incoming messages in the chat not yet marked read, oldest first. */
   unreadIncoming(conversationId: string): Promise<Message[]>;
   markRead(conversationId: string): Promise<void>;
+  /** Messages whose time is up (disappearing messages). */
+  expired(now: number): Promise<Message[]>;
   people(): Promise<Person[]>;
   person(accountId: string): Promise<Person | null>;
   savePerson(person: Person): Promise<void>;
@@ -191,7 +215,9 @@ export interface MessageStore {
 export type Payload =
   | { v: 1; type: "intro"; accountId: string; displayName: string; username: string }
   | { v: 1; type: "profile"; displayName: string; about: string; photo: string | null; version: number }
-  | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string; location?: GeoPoint; forwarded?: boolean }
+  | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string; location?: GeoPoint; forwarded?: boolean; ttl?: number }
+  /** Turns disappearing messages on (seconds) or off (0) for the chat. */
+  | { v: 1; type: "timer"; seconds: number; at: number }
   | {
       v: 1;
       type: "file";
@@ -211,6 +237,7 @@ export type Payload =
       duration?: number;
       waveform?: number[];
       forwarded?: boolean;
+      ttl?: number;
     }
   | { v: 1; type: "receipt"; state: "delivered" | "read"; ids: string[] }
   | { v: 1; type: "edit"; id: string; text: string; editedAt: number }

@@ -88,6 +88,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const native = LeksCrypto;
     let cancelled = false;
     let appStateSubscription: { remove(): void } | null = null;
+    let purgeTimer: ReturnType<typeof setInterval> | undefined;
     (async () => {
       const engine = new NativeEngine((request) => native.call(request), `${native.stateDirectory()}/${session.deviceId}.mls`);
       await engine.open(identityOf(session));
@@ -163,19 +164,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         callManager.receive(signal);
       });
       created.onArrival(() => void notifyLocally("message").catch(() => undefined));
+      // Disappearing messages: checked every minute while the app is open, and on opening.
+      void created.purgeExpired().catch(() => undefined);
+      purgeTimer = setInterval(() => void created.purgeExpired().catch(() => undefined), 60_000);
       // Opened from the call notification's Answer / Decline buttons.
       const takeAction = () => {
         const action = LeksCalls?.takePendingAction();
         if (action) callManager.expect(action);
       };
       takeAction();
-      appStateSubscription = AppState.addEventListener("change", (next) => next === "active" && takeAction());
+      appStateSubscription = AppState.addEventListener("change", (next) => {
+        if (next !== "active") return;
+        takeAction();
+        void created.purgeExpired().catch(() => undefined);
+      });
       setMessenger(created);
       setCalls(callManager);
     })().catch((error) => console.warn("encryption core failed to open", error));
     return () => {
       cancelled = true;
       appStateSubscription?.remove();
+      clearInterval(purgeTimer);
       setMessenger(null);
       setCalls(null);
     };
