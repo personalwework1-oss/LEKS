@@ -3,6 +3,7 @@ import {
   authMessage,
   ClientFrame,
   CloseCode,
+  DAILY_NEW_CHATS,
   DAILY_UPLOAD_BYTES,
   type ErrorCode,
   passwordProblem,
@@ -26,6 +27,8 @@ import { hashUploadToken } from "./blobs.js";
 import { type CallConfig, callToken } from "../calls.js";
 
 /** Frames a connection may send: a burst of 100, refilled at 50 per second. */
+/** Different people reporting an account within a week before it may not start new chats. */
+const REPORTS_TO_RESTRICT = 3;
 const RATE_BURST = 100;
 const RATE_PER_SECOND = 50;
 
@@ -169,6 +172,12 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
         }
 
         case "claim_key_packages": {
+          // Blocked by them: looks like they have no devices.
+          if (await store.isBlocked(frame.accountId, me.accountId)) {
+            send({ type: "key_packages", requestId: frame.requestId, accountId: frame.accountId, items: [] });
+            return;
+          }
+          if (!(await store.allowContact(me.accountId, frame.accountId, DAILY_NEW_CHATS))) return error("new_chats_limited", frame.requestId);
           const items = await store.claimKeyPackages(frame.accountId);
           send({
             type: "key_packages",
@@ -264,6 +273,38 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
         case "set_backup": {
           if (!(await store.setBackup(me.accountId, me.deviceId, frame.blobId, frame.wrappedKey))) return error("not_found", frame.requestId);
           send({ type: "backup_saved", requestId: frame.requestId });
+          return;
+        }
+
+        case "block": {
+          if (!(await store.block(me.accountId, frame.accountId))) return error("not_found", frame.requestId);
+          send({ type: "blocked", requestId: frame.requestId });
+          return;
+        }
+
+        case "unblock": {
+          await store.unblock(me.accountId, frame.accountId);
+          send({ type: "unblocked", requestId: frame.requestId });
+          return;
+        }
+
+        case "list_blocks": {
+          send({ type: "blocks", requestId: frame.requestId, accountIds: await store.listBlocks(me.accountId) });
+          return;
+        }
+
+        case "report": {
+          const restricted = await store.addReport(
+            {
+              reporterId: me.accountId,
+              reportedId: frame.accountId,
+              reason: frame.reason,
+              evidence: { comment: frame.comment ?? null, messages: frame.messages },
+            },
+            REPORTS_TO_RESTRICT,
+          );
+          app.log.info({ reason: frame.reason, restricted }, "report received");
+          send({ type: "reported", requestId: frame.requestId });
           return;
         }
 

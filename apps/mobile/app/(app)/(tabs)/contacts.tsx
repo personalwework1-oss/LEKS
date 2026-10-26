@@ -36,7 +36,9 @@ export default function Contacts() {
       setOpenError(
         error instanceof MessengerError && error.code === "no_devices"
           ? `${user.displayName} пока не может получать сообщения: приложение у него ещё не подключилось к серверу.`
-          : "Не удалось начать чат. Проверьте интернет и попробуйте ещё раз.",
+          : (error as { code?: string })?.code === "new_chats_limited"
+            ? "Сейчас нельзя начинать новые чаты: лимит на сегодня исчерпан или на аккаунт поступили жалобы. С теми, с кем вы уже общаетесь, переписка работает."
+            : "Не удалось начать чат. Проверьте интернет и попробуйте ещё раз.",
       );
     } finally {
       setOpening(false);

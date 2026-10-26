@@ -1,4 +1,4 @@
-import { type DeliveredMessage, MAX_BLOB_BYTES, type PublicUser } from "@leks/protocol";
+import { type DeliveredMessage, MAX_BLOB_BYTES, MAX_REPORT_MESSAGES, type PublicUser, type ReportReason } from "@leks/protocol";
 import type { Realtime } from "../api/realtime";
 import { type Engine, utf8Decode, utf8Encode } from "../crypto/engine";
 import type { FileIO } from "./files";
@@ -440,7 +440,9 @@ export class Messenger {
     const unread = await this.store.unreadIncoming(conversationId);
     await this.store.markRead(conversationId);
     for (const message of unread) await this.store.setStatus(message.id, "read");
-    if (unread.length > 0) {
+    // Someone I have not answered yet does not learn that I read it.
+    const chat = await this.store.conversation(conversationId);
+    if (unread.length > 0 && (chat?.kind === "group" || chat?.accepted !== false)) {
       await this.sendPayload(conversationId, { v: 1, type: "receipt", state: "read", ids: unread.map((m) => m.id) }, null);
     }
     this.changed();
@@ -460,6 +462,7 @@ export class Messenger {
     await this.flush();
     // Uploads cut off by a lost connection or a closed app continue now.
     for (const message of await this.store.pendingUploads()) void this.upload(message.id);
+    void this.refreshBlocks().catch((error: unknown) => console.warn("blocks", error));
     // Devices that appeared or disappeared since last time (a friend's new phone, a removed one).
     void this.rememberAllMembers().then(() => this.syncAll());
   }
@@ -500,8 +503,10 @@ export class Messenger {
         // The inviter may be one of my own phones, so the person this chat is with comes from the group.
         const others = (await this.engine.members(groupId)).map((m) => parseIdentity(m)?.accountId).filter((a) => a && a !== this.me.accountId);
         const peer = others.includes(message.from.accountId) ? message.from.accountId : (others[0] ?? message.from.accountId);
-        await this.store.saveConversation(directChat(groupId, peer, message.sentAt));
-        await this.shareProfile(groupId);
+        // Started by someone else: a request until I answer (my photo and "about" wait until then).
+        const fromMe = message.from.accountId === this.me.accountId;
+        await this.store.saveConversation({ ...directChat(groupId, peer, message.sentAt), accepted: fromMe });
+        if (fromMe) await this.shareProfile(groupId);
       } else if (existing.rejoining || existing.left) {
         // This phone (restored from a backup) is back in the chat.
         await this.store.saveConversation({ ...existing, rejoining: false, left: false });
@@ -550,12 +555,17 @@ export class Messenger {
     const fromPeer = !mine;
     // After leaving, only news about the group itself still counts.
     if (conversation.left && payload.type !== "group_info") return null;
+    // Blocked: nothing from them (the server already holds most of it back), except who is in a shared group.
+    if (fromPeer && payload.type !== "group_info" && payload.type !== "leave" && (await this.store.person(sender.accountId))?.blocked) return null;
 
     switch (payload.type) {
       case "intro":
         // From the person themselves, or from one of my phones bringing a new phone of mine into the chat.
         if (!isGroup && ((fromPeer && payload.accountId === sender.accountId) || (mine && payload.accountId === conversation.peerAccountId))) {
-          await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username || null });
+          // "existing": this phone was just brought into a chat I already had, so it is not a request.
+          const accepted = payload.existing || mine ? true : conversation.accepted;
+          await this.store.saveConversation({ ...conversation, title: payload.displayName, username: payload.username || null, accepted });
+          if (accepted && conversation.accepted === false) await this.shareProfile(conversation.id);
         }
         return null;
 
@@ -603,6 +613,8 @@ export class Messenger {
           members,
           version: payload.version,
           left: conversation.left || !stillIn,
+          // Group invitations are not shown as requests (for now).
+          accepted: true,
         });
         return null;
       }
@@ -937,7 +949,8 @@ export class Messenger {
     const payload = payloadOf(message)!;
 
     await this.store.addMessage(message);
-    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt, draft: null });
+    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt, draft: null, accepted: true });
+    if (conversation.accepted === false) await this.shareProfile(conversationId);
     this.typingSentAt.delete(conversationId);
     if (conversation.rejoining) {
       // Restored phone not back in the chat yet: kept as "sending" and sent the moment it is.
@@ -995,7 +1008,8 @@ export class Messenger {
       expiresAt: expiryOf(now, conversation.timer || undefined),
     };
     await this.store.addMessage(message);
-    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt });
+    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt, accepted: true });
+    if (conversation.accepted === false) await this.shareProfile(conversationId);
     this.changed();
     void this.upload(id);
     return message;
@@ -1249,6 +1263,83 @@ export class Messenger {
       }
     }
     return true;
+  }
+
+  // ---- blocking and reports ---------------------------------------------------
+
+  /** Takes the block list from the server (it is kept there, so it holds on every phone of mine). */
+  async refreshBlocks(): Promise<void> {
+    const answer = await this.transport.request({ type: "list_blocks" }, "blocks");
+    const blocked = new Set(answer.accountIds);
+    for (const person of await this.store.people()) {
+      if (!!person.blocked !== blocked.has(person.accountId)) await this.store.savePerson({ ...person, blocked: blocked.has(person.accountId) });
+      blocked.delete(person.accountId);
+    }
+    for (const accountId of blocked) await this.markBlocked(accountId, true);
+    this.changed();
+  }
+
+  private async markBlocked(accountId: string, blocked: boolean): Promise<void> {
+    const direct = await this.store.conversationWith(accountId);
+    const known = (await this.store.person(accountId)) ?? {
+      accountId,
+      displayName: direct?.title ?? "",
+      username: direct?.username ?? null,
+      about: "",
+      photo: null,
+      version: 0,
+      nickname: null,
+    };
+    await this.store.savePerson({ ...known, blocked });
+  }
+
+  /** Their messages, calls and new chats stop reaching me, on all my phones. They are not told. */
+  async block(accountId: string): Promise<void> {
+    if (accountId === this.me.accountId) throw new MessengerError("not_allowed");
+    await this.transport.request({ type: "block", accountId }, "blocked");
+    await this.markBlocked(accountId, true);
+    this.changed();
+  }
+
+  async unblock(accountId: string): Promise<void> {
+    await this.transport.request({ type: "unblock", accountId }, "unblocked");
+    await this.markBlocked(accountId, false);
+    this.changed();
+  }
+
+  /** Lets a chat someone else started become a normal one (they can see I read it, and get my profile). */
+  async accept(conversationId: string): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat || chat.accepted !== false) return;
+    await this.store.saveConversation({ ...chat, accepted: true });
+    await this.shareProfile(conversationId);
+    this.changed();
+  }
+
+  /**
+   * Reports someone. The server cannot read chats, so with `attach` the last
+   * messages they sent in this chat go with the report, from this phone.
+   */
+  async report(
+    accountId: string,
+    options: { reason: ReportReason; conversationId?: string; attach: boolean; block: boolean; comment?: string },
+  ): Promise<void> {
+    const messages: { text: string; sentAt: number; kind?: string }[] = [];
+    if (options.attach && options.conversationId) {
+      const theirs = (await this.store.messages(options.conversationId, 200)).filter((m) => m.senderAccountId === accountId && !m.deleted && !m.event);
+      for (const m of theirs.slice(-MAX_REPORT_MESSAGES)) {
+        messages.push({
+          text: m.text.slice(0, 4000),
+          sentAt: m.sentAt,
+          ...(m.attachment ? { kind: m.attachment.kind } : m.location ? { kind: "location" } : {}),
+        });
+      }
+    }
+    await this.transport.request(
+      { type: "report", accountId, reason: options.reason, messages, ...(options.comment ? { comment: options.comment.slice(0, 500) } : {}) },
+      "reported",
+    );
+    if (options.block) await this.block(accountId);
   }
 
   // ---- disappearing messages and drafts ------------------------------------
@@ -1650,10 +1741,14 @@ export class Messenger {
       } else {
         // A new phone of mine learns who the chat is with; a new phone of theirs learns who I am.
         if (addedAccounts.includes(this.me.accountId) && latest.peerAccountId !== this.me.accountId) {
-          await this.sendPayload(conversationId, { v: 1, type: "intro", accountId: latest.peerAccountId, displayName: latest.title, username: latest.username ?? "" }, null);
+          await this.sendPayload(
+            conversationId,
+            { v: 1, type: "intro", accountId: latest.peerAccountId, displayName: latest.title, username: latest.username ?? "", existing: true },
+            null,
+          );
         }
         if (addedAccounts.some((a) => a !== this.me.accountId)) {
-          await this.sendPayload(conversationId, await this.introPayload(), null);
+          await this.sendPayload(conversationId, { ...(await this.introPayload()), existing: true }, null);
           await this.shareProfile(conversationId);
         }
       }

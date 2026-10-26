@@ -175,6 +175,14 @@ export const HttpErrorCode = z.enum([
 export type HttpErrorCode = z.infer<typeof HttpErrorCode>;
 export const HttpError = z.object({ error: HttpErrorCode });
 
+/** Why someone is reported. */
+export const ReportReason = z.enum(["spam", "scam", "abuse", "illegal", "other"]);
+export type ReportReason = z.infer<typeof ReportReason>;
+/** At most this many messages go with a report, chosen on the reporter's phone. */
+export const MAX_REPORT_MESSAGES = 10;
+/** New chats one account may start per day. */
+export const DAILY_NEW_CHATS = 50;
+
 // ---------------------------------------------------------------------------
 // WebSocket: frames the apps send
 
@@ -253,6 +261,21 @@ export const ClientFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("get_backup"), requestId: RequestId }),
   /** The name others see when they look me up by @username (photo and "about" go only end-to-end). */
   z.object({ type: z.literal("update_profile"), requestId: RequestId, displayName: DisplayName }),
+  /** Stops this account's messages, calls and new chats reaching me. */
+  z.object({ type: z.literal("block"), requestId: RequestId, accountId: Id }),
+  z.object({ type: z.literal("unblock"), requestId: RequestId, accountId: Id }),
+  z.object({ type: z.literal("list_blocks"), requestId: RequestId }),
+  /** A report; `messages` are copies of their messages the reporter chose to send (the server cannot read chats). */
+  z.object({
+    type: z.literal("report"),
+    requestId: RequestId,
+    accountId: Id,
+    reason: ReportReason,
+    comment: z.string().max(500).optional(),
+    messages: z
+      .array(z.object({ text: z.string().max(4000), sentAt: z.number().int(), kind: z.string().max(20).optional() }))
+      .max(MAX_REPORT_MESSAGES),
+  }),
   /** Asks these devices' apps to bring my devices into our chats now (after a restore). No content. */
   z.object({ type: z.literal("nudge"), deviceIds: z.array(Id).min(1).max(1000) }),
 ]);
@@ -277,6 +300,8 @@ export const ErrorCode = z.enum([
   "upload_quota_exceeded",
   "calls_unavailable",
   "rate_limited",
+  /** Too many new chats today, or the account is restricted after reports. */
+  "new_chats_limited",
   "internal",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -337,6 +362,10 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("nudge"), accountId: Id }),
   z.object({ type: z.literal("backup_saved"), requestId: RequestId }),
   z.object({ type: z.literal("profile_updated"), requestId: RequestId }),
+  z.object({ type: z.literal("blocked"), requestId: RequestId }),
+  z.object({ type: z.literal("unblocked"), requestId: RequestId }),
+  z.object({ type: z.literal("blocks"), requestId: RequestId, accountIds: z.array(Id) }),
+  z.object({ type: z.literal("reported"), requestId: RequestId }),
   z.object({
     type: z.literal("backup"),
     requestId: RequestId,

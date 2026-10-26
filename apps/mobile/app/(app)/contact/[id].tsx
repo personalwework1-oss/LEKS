@@ -1,9 +1,10 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { AppText, Avatar, Button, IconButton, NavHeader, Screen, TextField } from "@/components/ui";
 import { nameOf, useConversations, usePeople } from "@/messaging/hooks";
+import { ReportSheet } from "@/features/ReportSheet";
 import { chooseTimer } from "@/features/timer";
 import { MAX_DISPLAY_NAME, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
@@ -24,6 +25,7 @@ export default function ContactScreen() {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
   const [viewing, setViewing] = useState(false);
+  const [reporting, setReporting] = useState(false);
 
   async function saveNickname(value: string | null) {
     await messenger?.setNickname(id, value);
@@ -126,6 +128,41 @@ export default function ContactScreen() {
           </>
         )}
       </View>
+      <View style={{ marginTop: 16, borderRadius: 16, backgroundColor: p.surface, overflow: "hidden" }}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() =>
+            person?.blocked
+              ? void messenger?.unblock(id)
+              : Alert.alert(`Заблокировать ${shown}?`, "Он не сможет писать, звонить и начинать с вами новые чаты. Он об этом не узнает.", [
+                  { text: "Отмена", style: "cancel" },
+                  { text: "Заблокировать", style: "destructive", onPress: () => void messenger?.block(id) },
+                ])
+          }
+          style={({ pressed }) => ({ padding: 16, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+        >
+          <AppText color={person?.blocked ? p.accentText : p.danger}>{person?.blocked ? "Разблокировать" : "Заблокировать"}</AppText>
+        </Pressable>
+        <View style={{ height: 1, marginLeft: 16, backgroundColor: p.separator }} />
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setReporting(true)}
+          style={({ pressed }) => ({ padding: 16, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+        >
+          <AppText color={p.danger}>Пожаловаться</AppText>
+        </Pressable>
+      </View>
+      <ReportSheet
+        name={shown}
+        visible={reporting}
+        canAttach={!!chat}
+        onClose={() => setReporting(false)}
+        onSend={async (choice) => {
+          await messenger?.report(id, { ...choice, conversationId: chat?.id });
+          setReporting(false);
+          Alert.alert("Жалоба отправлена", choice.block ? `Спасибо. ${shown} заблокирован.` : "Спасибо, мы её рассмотрим.");
+        }}
+      />
       <PhotoViewer photo={viewing ? (person?.photo ?? null) : null} name={shown} onClose={() => setViewing(false)} />
     </Screen>
   );

@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   rejoining INTEGER NOT NULL DEFAULT 0,
   pinned INTEGER NOT NULL DEFAULT 0,
   timer INTEGER NOT NULL DEFAULT 0,
-  draft TEXT
+  draft TEXT,
+  accepted INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS conversations_peer ON conversations (peer_account_id);
 CREATE TABLE IF NOT EXISTS messages (
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS people (
   about TEXT NOT NULL DEFAULT '',
   photo TEXT,
   version INTEGER NOT NULL DEFAULT 0,
-  nickname TEXT
+  nickname TEXT,
+  blocked INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -82,6 +84,8 @@ const UPGRADES: string[] = [
   `ALTER TABLE conversations ADD COLUMN timer INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE conversations ADD COLUMN draft TEXT;
    ALTER TABLE messages ADD COLUMN expires_at INTEGER;`,
+  `ALTER TABLE conversations ADD COLUMN accepted INTEGER NOT NULL DEFAULT 1;
+   ALTER TABLE people ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 interface PersonRow {
@@ -92,6 +96,7 @@ interface PersonRow {
   photo: string | null;
   version: number;
   nickname: string | null;
+  blocked: number;
 }
 
 const toPerson = (r: PersonRow): Person => ({
@@ -102,6 +107,7 @@ const toPerson = (r: PersonRow): Person => ({
   photo: r.photo,
   version: r.version,
   nickname: r.nickname,
+  blocked: r.blocked === 1,
 });
 
 interface ConversationRow {
@@ -120,6 +126,7 @@ interface ConversationRow {
   pinned: number;
   timer: number;
   draft: string | null;
+  accepted: number;
 }
 
 interface MessageRow {
@@ -167,6 +174,7 @@ const toConversation = (r: ConversationRow): Conversation => ({
   pinned: r.pinned === 1,
   timer: r.timer ?? 0,
   draft: r.draft,
+  accepted: r.accepted !== 0,
 });
 
 function parseMembers(json: string): GroupMember[] {
@@ -260,13 +268,13 @@ export class SqliteStore implements MessageStore {
 
   async saveConversation(c: Conversation) {
     await this.db.runAsync(
-      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned, timer, draft)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned, timer, draft, accepted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET peer_account_id = excluded.peer_account_id, title = excluded.title,
          username = excluded.username, last_text = excluded.last_text, last_at = excluded.last_at, unread = excluded.unread,
          kind = excluded.kind, members = excluded.members, version = excluded.version, left_group = excluded.left_group,
-         rejoining = excluded.rejoining, pinned = excluded.pinned, timer = excluded.timer, draft = excluded.draft`,
-      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0, c.timer ?? 0, c.draft ?? null],
+         rejoining = excluded.rejoining, pinned = excluded.pinned, timer = excluded.timer, draft = excluded.draft, accepted = excluded.accepted`,
+      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0, c.timer ?? 0, c.draft ?? null, c.accepted === false ? 0 : 1],
     );
   }
 
@@ -364,10 +372,10 @@ export class SqliteStore implements MessageStore {
 
   async savePerson(p: Person) {
     await this.db.runAsync(
-      `INSERT INTO people (account_id, display_name, username, about, photo, version, nickname) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO people (account_id, display_name, username, about, photo, version, nickname, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(account_id) DO UPDATE SET display_name = excluded.display_name, username = excluded.username, about = excluded.about,
-         photo = excluded.photo, version = excluded.version, nickname = excluded.nickname`,
-      [p.accountId, p.displayName, p.username, p.about, p.photo, p.version, p.nickname],
+         photo = excluded.photo, version = excluded.version, nickname = excluded.nickname, blocked = excluded.blocked`,
+      [p.accountId, p.displayName, p.username, p.about, p.photo, p.version, p.nickname, p.blocked ? 1 : 0],
     );
   }
 

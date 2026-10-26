@@ -9,6 +9,7 @@ import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar, IconButton } from "@/components/ui";
 import { pickDocuments, pickFromGallery } from "@/features/attachments";
 import { currentLocation, describePoint, openInMaps } from "@/features/location";
+import { ReportSheet } from "@/features/ReportSheet";
 import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { callText, MessengerError, previewOf } from "@/messaging/messenger";
@@ -35,6 +36,7 @@ export default function Chat() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [locating, setLocating] = useState(false);
   const [forwarding, setForwarding] = useState<Message | null>(null);
+  const [reporting, setReporting] = useState(false);
   const [recording, setRecording] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
@@ -190,6 +192,7 @@ export default function Chat() {
   }
 
   const isGroup = chat?.kind === "group";
+  const peerBlocked = !isGroup && !!chat && !!people.get(chat.peerAccountId)?.blocked;
   const names = useMemo(
     () => new Map((chat?.members ?? []).map((m) => [m.accountId, nameOf(people, m.accountId, m.displayName)])),
     [chat?.members, people],
@@ -262,7 +265,7 @@ export default function Chat() {
         </View>
         </Pressable>
         <IconButton icon="search" label="Поиск в чате" tone="plain" onPress={() => setSearching(true)} />
-        {chat && !chat.left && !chat.rejoining ? (
+        {chat && !chat.left && !chat.rejoining && !peerBlocked ? (
           <>
             <IconButton icon="phone" label="Аудиозвонок" tone="plain" onPress={() => void calls?.start(id, false)} />
             <IconButton icon="video" label="Видеозвонок" tone="plain" onPress={() => void calls?.start(id, true)} />
@@ -376,7 +379,54 @@ export default function Chat() {
           </AppText>
         </View>
       ) : null}
-      {chat?.left ? (
+      {chat && !isGroup && chat.accepted === false && !peerBlocked ? (
+        <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, gap: 12 }}>
+          <AppText style={{ textAlign: "center" }}>
+            {`${title}${chat.username ? ` (@${chat.username})` : ""} нет среди ваших собеседников.`}
+          </AppText>
+          <AppText variant="caption" muted style={{ textAlign: "center" }}>
+            Пока вы не ответите, он не увидит, что вы прочитали, и не получит ваше фото. Никогда не переводите деньги и не сообщайте коды незнакомым.
+          </AppText>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() =>
+                Alert.alert(`Заблокировать ${title}?`, "Он не сможет писать и звонить вам.", [
+                  { text: "Отмена", style: "cancel" },
+                  { text: "Заблокировать", style: "destructive", onPress: () => void messenger?.block(chat.peerAccountId) },
+                ])
+              }
+              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.surfaceMuted, alignItems: "center", justifyContent: "center" }}
+            >
+              <AppText color={p.danger}>Заблокировать</AppText>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setReporting(true)}
+              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.surfaceMuted, alignItems: "center", justifyContent: "center" }}
+            >
+              <AppText color={p.danger}>Пожаловаться</AppText>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void messenger?.accept(id)}
+              style={{ flex: 1, height: 44, borderRadius: 12, backgroundColor: p.accent, alignItems: "center", justifyContent: "center" }}
+            >
+              <AppText color={p.onAccent}>Принять</AppText>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+      {peerBlocked && chat ? (
+        <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16), gap: 10, alignItems: "center" }}>
+          <AppText muted style={{ textAlign: "center" }}>
+            {`Вы заблокировали ${title}. Его сообщения и звонки к вам не приходят.`}
+          </AppText>
+          <Pressable accessibilityRole="button" onPress={() => void messenger?.unblock(chat.peerAccountId)} hitSlop={8}>
+            <AppText color={p.accentText}>Разблокировать</AppText>
+          </Pressable>
+        </View>
+      ) : chat?.left ? (
         <View style={{ backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator, padding: 16, paddingBottom: Math.max(insets.bottom, 16) }}>
           <AppText muted style={{ textAlign: "center" }}>
             Вы больше не участник этой группы.
@@ -492,6 +542,19 @@ export default function Chat() {
           setMenuFor(null);
         }}
       />
+      {chat && !isGroup ? (
+        <ReportSheet
+          name={title}
+          visible={reporting}
+          canAttach
+          onClose={() => setReporting(false)}
+          onSend={async (choice) => {
+            await messenger?.report(chat.peerAccountId, { ...choice, conversationId: id });
+            setReporting(false);
+            Alert.alert("Жалоба отправлена", choice.block ? `Спасибо. ${title} заблокирован.` : "Спасибо, мы её рассмотрим.");
+          }}
+        />
+      ) : null}
       <ForwardPicker
         message={forwarding}
         people={people}

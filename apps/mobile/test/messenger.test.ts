@@ -160,6 +160,8 @@ class FakeServer {
   failUploads = false;
   removed = new Set<string>();
   names = new Map<string, string>();
+  blocks = new Map<string, Set<string>>();
+  reports: { accountId: string; reason: string; messages: { text: string }[] }[] = [];
   backups = new Map<string, { blobId: string; wrappedKey: string; size: number; updatedAt: number }>();
   nudged: string[] = [];
   /** One clock for everyone, so message order is the order things happened. */
@@ -199,6 +201,20 @@ class Phone {
           const items = [...byDevice.values()];
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
+        }
+        if (frame.type === "list_blocks") {
+          return { type: "blocks", requestId: "r", accountIds: [...(server.blocks.get(me.accountId) ?? [])] };
+        }
+        if (frame.type === "block" || frame.type === "unblock") {
+          const set = server.blocks.get(me.accountId) ?? new Set<string>();
+          if (frame.type === "block") set.add(frame.accountId!);
+          else set.delete(frame.accountId!);
+          server.blocks.set(me.accountId, set);
+          return { type: frame.type === "block" ? "blocked" : "unblocked", requestId: "r" };
+        }
+        if (frame.type === "report") {
+          server.reports.push(frame as unknown as { accountId: string; reason: string; messages: { text: string }[] });
+          return { type: "reported", requestId: "r" };
         }
         if (frame.type === "update_profile") {
           server.names.set(me.accountId, (frame as unknown as { displayName: string }).displayName);
@@ -381,6 +397,10 @@ async function chatting() {
   const chatId = await phones.a.messenger.startChat(asUser(bob));
   await phones.a.messenger.flush();
   await phones.b.deliver();
+  // Bob knows Alice: the chat is not a request on his side.
+  await phones.b.messenger.accept(chatId);
+  await phones.b.messenger.flush();
+  await phones.a.deliver();
   return { ...phones, chatId };
 }
 
@@ -969,12 +989,17 @@ describe("profiles", () => {
     const { a, b } = await twoPhones();
     await a.messenger.setProfile({ about: "Алиса тут" });
     await b.messenger.setProfile({ about: "Боб тут" });
-    await a.messenger.startChat(asUser(bob));
+    const chatId = await a.messenger.startChat(asUser(bob));
     await a.messenger.flush();
     await b.deliver();
+    expect((await b.messenger.person("acc-alice"))?.about).toBe("Алиса тут");
+    // Bob's profile goes to Alice only once he answers (she might be a stranger).
     await b.messenger.flush();
     await a.deliver();
-    expect((await b.messenger.person("acc-alice"))?.about).toBe("Алиса тут");
+    expect(await a.messenger.person("acc-bob")).toBeNull();
+    await b.messenger.send(chatId, "Привет");
+    await b.messenger.flush();
+    await a.deliver();
     expect((await a.messenger.person("acc-bob"))?.about).toBe("Боб тут");
   });
 
@@ -1099,6 +1124,56 @@ describe("disappearing messages, drafts and search", () => {
     await a.messenger.send(chatId, "берлин подходит");
     expect((await a.messenger.search(chatId, "БЕРЛИН")).map((m) => m.text)).toEqual(["берлин подходит", "Встреча в Берлине"]);
     expect(await a.messenger.search(chatId, "  ")).toEqual([]);
+  });
+});
+
+describe("requests, blocking and reports", () => {
+  it("a chat from someone new is a request: no read receipts until I answer", async () => {
+    const { a, b } = await twoPhones();
+    const chatId = await a.messenger.startChat(asUser(bob));
+    await a.messenger.send(chatId, "Привет, это Алиса");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.conversation(chatId))?.accepted).toBe(false);
+    await b.messenger.markRead(chatId);
+    await b.messenger.flush();
+    await a.deliver();
+    expect((await a.messenger.messages(chatId))[0]!.status).toBe("delivered");
+    await b.messenger.accept(chatId);
+    expect((await b.messenger.conversation(chatId))?.accepted).toBe(true);
+    // My own new chats are never requests.
+    expect((await a.messenger.conversation(chatId))?.accepted).not.toBe(false);
+  });
+
+  it("blocking hides their messages and is kept on the server", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await b.messenger.block("acc-alice");
+    expect(server.blocks.get("acc-bob")?.has("acc-alice")).toBe(true);
+    expect((await b.messenger.person("acc-alice"))?.blocked).toBe(true);
+    // (The real server holds these back; the phone drops them too.)
+    await a.messenger.send(chatId, "ты меня слышишь?");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.messages(chatId)).map((m) => m.text)).not.toContain("ты меня слышишь?");
+
+    await b.messenger.unblock("acc-alice");
+    await a.messenger.send(chatId, "а теперь?");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.messages(chatId)).map((m) => m.text)).toContain("а теперь?");
+  });
+
+  it("a report carries only the last messages they sent, and can block at once", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await b.messenger.send(chatId, "моё");
+    for (let i = 1; i <= 12; i++) await a.messenger.send(chatId, `спам ${i}`);
+    await a.messenger.flush();
+    await b.deliver();
+    await b.messenger.report("acc-alice", { reason: "spam", conversationId: chatId, attach: true, block: true });
+    const [report] = server.reports;
+    expect(report!.reason).toBe("spam");
+    expect(report!.messages.map((m) => m.text)).toEqual(Array.from({ length: 10 }, (_, i) => `спам ${i + 3}`));
+    expect((await b.messenger.person("acc-alice"))?.blocked).toBe(true);
   });
 });
 

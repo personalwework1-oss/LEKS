@@ -34,6 +34,8 @@ export interface Conversation {
   timer?: number;
   /** Unsent text in the composer (only on this phone). */
   draft?: string | null;
+  /** false: someone I do not know started it (or added me to a group) and I have not answered yet. */
+  accepted?: boolean;
 }
 
 /**
@@ -159,6 +161,8 @@ export interface Person {
   version: number;
   /** My own name for them; never sent anywhere. */
   nickname: string | null;
+  /** I blocked them: nothing from them reaches me (the server enforces it too). */
+  blocked?: boolean;
 }
 
 /** The longest "about" text. */
@@ -213,7 +217,8 @@ export interface MessageStore {
 
 /** What travels inside the encryption: never readable by the server. */
 export type Payload =
-  | { v: 1; type: "intro"; accountId: string; displayName: string; username: string }
+  /** `existing`: sent when a new phone is brought into a chat that already existed. */
+  | { v: 1; type: "intro"; accountId: string; displayName: string; username: string; existing?: boolean }
   | { v: 1; type: "profile"; displayName: string; about: string; photo: string | null; version: number }
   | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string; location?: GeoPoint; forwarded?: boolean; ttl?: number }
   /** Turns disappearing messages on (seconds) or off (0) for the chat. */

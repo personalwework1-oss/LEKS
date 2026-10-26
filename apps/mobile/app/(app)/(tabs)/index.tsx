@@ -145,6 +145,13 @@ function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Per
           <AppText variant="bodyStrong" numberOfLines={1} style={{ flex: 1 }}>
             {face.title}
           </AppText>
+          {chat.accepted === false && chat.kind === "direct" ? (
+            <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, backgroundColor: p.warningSoft }}>
+              <AppText variant="caption" color={p.warningText} style={{ fontSize: 11, lineHeight: 15 }}>
+                запрос
+              </AppText>
+            </View>
+          ) : null}
           {chat.pinned ? <Icon name="pin" size={14} color={p.textMuted} strokeWidth={2.2} /> : null}
           <AppText variant="caption" color={unread ? p.accentText : p.textMuted}>
             {listTime(chat.lastAt)}

@@ -135,7 +135,13 @@ export default function Settings() {
           { title: "Устройства", onPress: () => router.push("/settings/devices") },
         ]}
       />
-      <SettingsGroup title="Приватность" rows={[{ title: "Блокировка приложения", value: lockValue, onPress: () => router.push("/settings/lock") }]} />
+      <SettingsGroup
+        title="Приватность"
+        rows={[
+          { title: "Блокировка приложения", value: lockValue, onPress: () => router.push("/settings/lock") },
+          { title: "Заблокированные", onPress: () => router.push("/settings/blocked") },
+        ]}
+      />
       <SettingsGroup
         title="Безопасность"
         rows={[

@@ -285,13 +285,18 @@ export class Store {
     payload: Buffer;
   }): Promise<{ accepted: string[]; unknown: string[]; created: { id: number; recipientDeviceId: string }[] }> {
     const recipients = [...new Set(input.recipients)];
-    const known = await this.pool.query<{ id: string }>("SELECT id FROM devices WHERE id = ANY($1::uuid[])", [
-      recipients,
-    ]);
+    const known = await this.pool.query<{ id: string; blocked: boolean }>(
+      `SELECT d.id, EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id = d.account_id AND b.blocked_id = $2) AS blocked
+         FROM devices d WHERE d.id = ANY($1::uuid[])`,
+      [recipients, input.senderAccountId],
+    );
     const accepted = known.rows.map((row) => row.id);
     const acceptedSet = new Set(accepted);
     const unknown = recipients.filter((id) => !acceptedSet.has(id));
-    if (accepted.length === 0) return { accepted, unknown, created: [] };
+    // Someone who blocked the sender gets nothing from them, except group commits
+    // (those keep shared groups' encryption in step). The sender is not told.
+    const deliver = known.rows.filter((row) => !row.blocked || input.kind === "commit").map((row) => row.id);
+    if (deliver.length === 0) return { accepted, unknown, created: [] };
 
     const { rows } = await this.pool.query<{ id: string; recipient_device_id: string }>(
       `INSERT INTO message_queue
@@ -299,7 +304,15 @@ export class Store {
        SELECT r, $2, $3, $4, $5, $6 FROM unnest($1::uuid[]) AS r
        ON CONFLICT (recipient_device_id, sender_device_id, client_message_id) DO NOTHING
        RETURNING id, recipient_device_id`,
-      [accepted, input.senderAccountId, input.senderDeviceId, input.clientMessageId, input.kind, input.payload],
+      [deliver, input.senderAccountId, input.senderDeviceId, input.clientMessageId, input.kind, input.payload],
+    );
+    // People who write to each other are contacts (also covers chats from before contacts were tracked).
+    await this.pool.query(
+      `INSERT INTO contacts (a, b, started_by)
+       SELECT DISTINCT least(d.account_id, $2::uuid), greatest(d.account_id, $2::uuid), $2::uuid
+         FROM devices d WHERE d.id = ANY($1::uuid[]) AND d.account_id <> $2::uuid
+       ON CONFLICT DO NOTHING`,
+      [deliver, input.senderAccountId],
     );
     return {
       accepted,
@@ -408,6 +421,89 @@ export class Store {
   }
 
   // ---- devices and backups ---------------------------------------------
+
+  // ---- blocking, reports, new chats ------------------------------------------
+
+  async block(blockerId: string, blockedId: string): Promise<boolean> {
+    if (blockerId === blockedId) return false;
+    const result = await this.pool.query(
+      "INSERT INTO blocks (blocker_id, blocked_id) SELECT $1, id FROM accounts WHERE id = $2 ON CONFLICT DO NOTHING",
+      [blockerId, blockedId],
+    );
+    return (result.rowCount ?? 0) > 0 || (await this.isBlocked(blockerId, blockedId));
+  }
+
+  async unblock(blockerId: string, blockedId: string): Promise<void> {
+    await this.pool.query("DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2", [blockerId, blockedId]);
+  }
+
+  async isBlocked(blockerId: string, blockedId: string): Promise<boolean> {
+    const { rows } = await this.pool.query("SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2", [blockerId, blockedId]);
+    return rows.length > 0;
+  }
+
+  async listBlocks(blockerId: string): Promise<string[]> {
+    const { rows } = await this.pool.query<{ blocked_id: string }>("SELECT blocked_id FROM blocks WHERE blocker_id = $1 ORDER BY created_at", [blockerId]);
+    return rows.map((r) => r.blocked_id);
+  }
+
+  /**
+   * Stores a report. When enough different people report an account within a
+   * week, it cannot start new chats for a week (it can still write to people
+   * it already talks to). Returns whether that happened now.
+   */
+  async addReport(input: { reporterId: string; reportedId: string; reason: string; evidence: unknown }, threshold: number): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const target = await client.query("SELECT 1 FROM accounts WHERE id = $1", [input.reportedId]);
+      if (target.rows.length === 0 || input.reporterId === input.reportedId) return false;
+      await client.query("INSERT INTO reports (reporter_id, reported_id, reason, evidence) VALUES ($1, $2, $3, $4)", [
+        input.reporterId,
+        input.reportedId,
+        input.reason,
+        JSON.stringify(input.evidence),
+      ]);
+      const { rows } = await client.query<{ n: string }>(
+        "SELECT count(DISTINCT reporter_id) AS n FROM reports WHERE reported_id = $1 AND created_at > now() - interval '7 days'",
+        [input.reportedId],
+      );
+      if (Number(rows[0]!.n) < threshold) return false;
+      await client.query(
+        "UPDATE accounts SET restricted_until = now() + interval '7 days' WHERE id = $1 AND (restricted_until IS NULL OR restricted_until < now() + interval '7 days')",
+        [input.reportedId],
+      );
+      return true;
+    });
+  }
+
+  /**
+   * Called before someone gets another account's key packages (which is how a
+   * chat starts, and how devices are added later). A pair that already talks
+   * is always fine; a new one counts toward the daily limit and is refused for
+   * restricted accounts.
+   */
+  async allowContact(fromId: string, toId: string, dailyLimit: number): Promise<boolean> {
+    if (fromId === toId) return true;
+    const [a, b] = fromId < toId ? [fromId, toId] : [toId, fromId];
+    const known = await this.pool.query("SELECT 1 FROM contacts WHERE a = $1 AND b = $2", [a, b]);
+    if (known.rows.length > 0) return true;
+    const { rows } = await this.pool.query<{ restricted: boolean; today: string }>(
+      `SELECT coalesce(restricted_until > now(), false) AS restricted,
+              (SELECT count(*) FROM contacts WHERE started_by = $1 AND first_at > now() - interval '1 day') AS today
+         FROM accounts WHERE id = $1`,
+      [fromId],
+    );
+    const me = rows[0];
+    if (!me || me.restricted || Number(me.today) >= dailyLimit) return false;
+    await this.pool.query("INSERT INTO contacts (a, b, started_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [a, b, fromId]);
+    return true;
+  }
+
+  /** Records that two accounts talk (for chats that existed before contacts were tracked). */
+  async rememberContact(oneId: string, otherId: string): Promise<void> {
+    if (oneId === otherId) return;
+    const [a, b] = oneId < otherId ? [oneId, otherId] : [otherId, oneId];
+    await this.pool.query("INSERT INTO contacts (a, b, started_by) VALUES ($1, $2, $1) ON CONFLICT DO NOTHING", [a, b]);
+  }
 
   async setDisplayName(accountId: string, displayName: string): Promise<void> {
     await this.pool.query("UPDATE accounts SET display_name = $2 WHERE id = $1", [accountId, displayName]);
