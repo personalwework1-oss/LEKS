@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { FlatList, Pressable, Text, TextInput, View } from "react-native";
+import * as Haptics from "expo-haptics";
+import { Alert, FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BackupReminder } from "@/components/BackupReminder";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
@@ -118,13 +119,24 @@ export default function Chats() {
 
 function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Person> }) {
   const p = usePalette();
+  const { messenger } = useSession();
   const unread = chat.unread > 0;
   const face = chatFace(people, chat);
+  const menu = () => {
+    void Haptics.selectionAsync();
+    Alert.alert(face.title, undefined, [
+      { text: chat.pinned ? "Открепить" : "Закрепить наверху", onPress: () => void messenger?.setPinned(chat.id, !chat.pinned) },
+      { text: "Отмена", style: "cancel" },
+    ]);
+  };
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${face.title}${unread ? `, непрочитанных: ${chat.unread}` : ""}`}
       onPress={() => router.push({ pathname: "/chat/[id]", params: { id: chat.id } })}
+      onLongPress={menu}
+      delayLongPress={350}
+      accessibilityHint="Удерживайте, чтобы закрепить"
       style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
     >
       <Avatar name={face.title} seed={chat.peerAccountId} size={54} photo={face.photo} />
@@ -133,6 +145,7 @@ function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Per
           <AppText variant="bodyStrong" numberOfLines={1} style={{ flex: 1 }}>
             {face.title}
           </AppText>
+          {chat.pinned ? <Icon name="pin" size={14} color={p.textMuted} strokeWidth={2.2} /> : null}
           <AppText variant="caption" color={unread ? p.accentText : p.textMuted}>
             {listTime(chat.lastAt)}
           </AppText>

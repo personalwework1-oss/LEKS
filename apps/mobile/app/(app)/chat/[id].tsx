@@ -2,17 +2,18 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import { type ComponentRef, useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, Modal, Pressable, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AttachmentView } from "@/components/AttachmentView";
 import { Icon, type IconName } from "@/components/Icon";
 import { AppText, Avatar, IconButton } from "@/components/ui";
 import { pickDocuments, pickFromGallery } from "@/features/attachments";
+import { currentLocation, describePoint, openInMaps } from "@/features/location";
 import { MicButton, VoiceRecorder } from "@/features/VoiceRecorder";
 import { clockTime, dayKey, dayLabel } from "@/format";
 import { callText, MessengerError, previewOf } from "@/messaging/messenger";
-import { chatFace, nameOf, useConversation, useMessages, usePeople, useTyping } from "@/messaging/hooks";
-import { type CallEvent, type Message, REACTIONS } from "@/messaging/types";
+import { chatFace, nameOf, useConversation, useConversations, useMessages, usePeople, useTyping } from "@/messaging/hooks";
+import { type CallEvent, type Conversation, type GeoPoint, type Message, type Person, REACTIONS } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -32,6 +33,8 @@ export default function Chat() {
   const [mode, setMode] = useState<Mode>(null);
   const [menuFor, setMenuFor] = useState<Message | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [forwarding, setForwarding] = useState<Message | null>(null);
   const [recording, setRecording] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
@@ -103,6 +106,31 @@ export default function Chat() {
           : "Не удалось подготовить файл. Попробуйте ещё раз.",
       );
     }
+  }
+
+  /** Takes the current position and, after a confirmation, sends it. */
+  async function shareLocation() {
+    setAttachOpen(false);
+    setAttachError(null);
+    if (!messenger) return;
+    setLocating(true);
+    const result = await currentLocation();
+    setLocating(false);
+    if (!result.ok) {
+      setAttachError(
+        result.reason === "denied"
+          ? "Нет доступа к геопозиции. Разрешите его в настройках телефона."
+          : result.reason === "off"
+            ? "Геолокация на телефоне выключена. Включите её и попробуйте снова."
+            : "Не удалось определить, где вы. Попробуйте ещё раз на улице или у окна.",
+      );
+      return;
+    }
+    const accuracy = result.point.accuracy !== undefined ? ` Точность — около ${Math.round(result.point.accuracy)} м.` : "";
+    Alert.alert("Отправить геопозицию?", `Собеседник увидит, где вы сейчас.${accuracy}`, [
+      { text: "Отмена", style: "cancel" },
+      { text: "Отправить", onPress: () => void messenger.sendLocation(id, result.point).catch(() => setAttachError("Не удалось отправить.")) },
+    ]);
   }
 
   function startMode(next: Mode) {
@@ -265,6 +293,14 @@ export default function Chat() {
             <IconButton icon="close" label={mode.kind === "edit" ? "Отменить редактирование" : "Отменить ответ"} tone="plain" onPress={cancelMode} />
           </View>
         ) : null}
+        {locating ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
+            <ActivityIndicator size="small" color={p.accent} />
+            <AppText variant="caption" muted>
+              Определяем, где вы…
+            </AppText>
+          </View>
+        ) : null}
         {attachError ? (
           <AppText variant="caption" color={p.danger} style={{ paddingHorizontal: 16, paddingTop: 8 }} accessibilityLiveRegion="assertive">
             {attachError}
@@ -316,7 +352,11 @@ export default function Chat() {
       </View>
       )}
 
-      <AttachMenu visible={attachOpen} onClose={() => setAttachOpen(false)} onPick={(source) => void attach(source)} />
+      <AttachMenu
+        visible={attachOpen}
+        onClose={() => setAttachOpen(false)}
+        onPick={(source) => (source === "location" ? void shareLocation() : void attach(source))}
+      />
 
       <MessageMenu
         message={menuFor}
@@ -332,6 +372,10 @@ export default function Chat() {
           if (menuFor) void Clipboard.setStringAsync(menuFor.text);
           setMenuFor(null);
         }}
+        onForward={() => {
+          setForwarding(menuFor);
+          setMenuFor(null);
+        }}
         onDeleteForEveryone={() => {
           if (menuFor) void messenger?.deleteForEveryone(menuFor.id);
           if (mode?.message.id === menuFor?.id) cancelMode();
@@ -343,7 +387,114 @@ export default function Chat() {
           setMenuFor(null);
         }}
       />
+      <ForwardPicker
+        message={forwarding}
+        people={people}
+        onClose={() => setForwarding(null)}
+        onPick={async (target) => {
+          const message = forwarding;
+          setForwarding(null);
+          if (!message || !messenger) return;
+          try {
+            await messenger.forward(message.id, target.id);
+            if (target.id !== id) router.replace({ pathname: "/chat/[id]", params: { id: target.id } });
+          } catch {
+            setAttachError("Не удалось переслать. Попробуйте ещё раз.");
+          }
+        }}
+      />
     </KeyboardAvoidingView>
+  );
+}
+
+/** A place on the map: no map is loaded (that would tell a map service where you are) until it is opened. */
+function LocationCard({ point, outgoing }: { point: GeoPoint; outgoing: boolean }) {
+  const p = usePalette();
+  const fg = outgoing ? p.onAccent : p.bubbleInText;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Геопозиция ${describePoint(point)}. Открыть в картах`}
+      onPress={() => void openInMaps(point)}
+      style={({ pressed }) => ({
+        width: 220,
+        borderRadius: 12,
+        overflow: "hidden",
+        marginBottom: 4,
+        opacity: pressed ? 0.85 : 1,
+        backgroundColor: outgoing ? "rgba(255,255,255,0.14)" : p.surface,
+      })}
+    >
+      <View style={{ height: 96, alignItems: "center", justifyContent: "center", backgroundColor: outgoing ? "rgba(255,255,255,0.1)" : p.accentSoft }}>
+        {/* A simple street-grid pattern behind the pin. */}
+        {[0, 1, 2, 3].map((i) => (
+          <View key={`h${i}`} style={{ position: "absolute", left: 0, right: 0, top: 12 + i * 24, height: 2, backgroundColor: outgoing ? "rgba(255,255,255,0.12)" : "rgba(91,108,255,0.12)" }} />
+        ))}
+        {[0, 1, 2, 3, 4].map((i) => (
+          <View key={`v${i}`} style={{ position: "absolute", top: 0, bottom: 0, left: 20 + i * 46, width: 2, backgroundColor: outgoing ? "rgba(255,255,255,0.12)" : "rgba(91,108,255,0.12)" }} />
+        ))}
+        <Icon name="location" size={38} color={outgoing ? p.onAccent : p.accent} strokeWidth={2.2} />
+      </View>
+      <View style={{ paddingHorizontal: 10, paddingVertical: 8 }}>
+        <AppText variant="bodyStrong" color={fg}>
+          Геопозиция
+        </AppText>
+        <AppText variant="caption" color={outgoing ? "rgba(255,255,255,0.85)" : p.textMuted}>
+          {describePoint(point)}
+        </AppText>
+      </View>
+    </Pressable>
+  );
+}
+
+/** Where to forward a message: any chat I can still write in. */
+function ForwardPicker({
+  message,
+  people,
+  onClose,
+  onPick,
+}: {
+  message: Message | null;
+  people: Map<string, Person>;
+  onClose: () => void;
+  onPick: (chat: Conversation) => void;
+}) {
+  const p = usePalette();
+  const insets = useSafeAreaInsets();
+  const { data: chats } = useConversations();
+  const open = chats.filter((c) => !c.left);
+  return (
+    <Modal visible={!!message} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+      <Pressable accessibilityLabel="Закрыть" onPress={onClose} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" }}>
+        <Pressable
+          onPress={() => undefined}
+          style={{ maxHeight: "75%", backgroundColor: p.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 16, paddingBottom: Math.max(insets.bottom, 14) }}
+        >
+          <AppText variant="heading" style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+            Переслать в…
+          </AppText>
+          <FlatList
+            data={open}
+            keyExtractor={(c) => c.id}
+            renderItem={({ item }) => {
+              const face = chatFace(people, item);
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => onPick(item)}
+                  style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+                >
+                  <Avatar name={face.title} seed={item.kind === "group" ? item.id : item.peerAccountId} size={42} photo={face.photo} />
+                  <AppText style={{ flex: 1 }} numberOfLines={1}>
+                    {face.title}
+                  </AppText>
+                </Pressable>
+              );
+            }}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -443,6 +594,15 @@ function Bubble({
           </View>
         ) : null}
 
+        {message.forwarded && !message.deleted ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 3 }}>
+            <Icon name="forward" size={13} color={meta} strokeWidth={2.2} />
+            <AppText variant="caption" color={meta} style={{ fontStyle: "italic" }}>
+              Переслано
+            </AppText>
+          </View>
+        ) : null}
+        {message.location && !message.deleted ? <LocationCard point={message.location} outgoing={out} /> : null}
         {message.attachment && !message.deleted ? (
           <AttachmentView attachment={message.attachment} outgoing={out} onDownload={onDownload} onRetry={onRetry} />
         ) : null}
@@ -519,6 +679,7 @@ function MessageMenu({
   onReply,
   onEdit,
   onCopy,
+  onForward,
   onDeleteForEveryone,
   onDeleteForMe,
 }: {
@@ -529,6 +690,7 @@ function MessageMenu({
   onReply: () => void;
   onEdit: () => void;
   onCopy: () => void;
+  onForward: () => void;
   onDeleteForEveryone: () => void;
   onDeleteForMe: () => void;
 }) {
@@ -538,7 +700,11 @@ function MessageMenu({
   const actions: { icon: IconName; label: string; onPress: () => void; danger?: boolean }[] = [
     { icon: "reply" as const, label: "Ответить", onPress: onReply },
     ...(message?.text ? [{ icon: "copy" as const, label: "Копировать", onPress: onCopy }] : []),
-    ...(own ? [{ icon: "edit" as const, label: "Изменить", onPress: onEdit }] : []),
+    ...(message && (!message.attachment || (message.attachment.blobId && message.attachment.key))
+      ? [{ icon: "forward" as const, label: "Переслать", onPress: onForward }]
+      : []),
+    ...(message?.location ? [{ icon: "location" as const, label: "Открыть в картах", onPress: () => void openInMaps(message.location!) }] : []),
+    ...(own && !message?.location ? [{ icon: "edit" as const, label: "Изменить", onPress: onEdit }] : []),
     ...(own ? [{ icon: "trash" as const, label: "Удалить у всех", onPress: onDeleteForEveryone, danger: true }] : []),
     { icon: "trash" as const, label: "Удалить у меня", onPress: onDeleteForMe, danger: true },
   ];
@@ -596,12 +762,13 @@ function MessageMenu({
   );
 }
 
-function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (source: "gallery" | "files") => void }) {
+function AttachMenu({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (source: "gallery" | "files" | "location") => void }) {
   const p = usePalette();
   const insets = useSafeAreaInsets();
-  const options: { source: "gallery" | "files"; icon: IconName; label: string; hint: string }[] = [
+  const options: { source: "gallery" | "files" | "location"; icon: IconName; label: string; hint: string }[] = [
     { source: "gallery", icon: "image", label: "Фото или видео", hint: "Фото сжимаются, геометки удаляются" },
     { source: "files", icon: "file", label: "Файл", hint: "Отправляется как есть, до 99 МБ" },
+    { source: "location", icon: "location", label: "Геопозиция", hint: "Где вы сейчас — видит только собеседник" },
   ];
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>

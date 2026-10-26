@@ -19,7 +19,7 @@ export class MemoryStore implements MessageStore {
   }
 
   async conversations() {
-    return [...this.chats.values()].sort((a, b) => b.lastAt - a.lastAt).map((c) => ({ ...c, members: c.members.map((m) => ({ ...m })) }));
+    return [...this.chats.values()].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastAt - a.lastAt).map((c) => ({ ...c, members: c.members.map((m) => ({ ...m })) }));
   }
   async conversation(id: string) {
     const chat = this.chats.get(id);
@@ -64,7 +64,7 @@ export class MemoryStore implements MessageStore {
       .map((m) => this.copy(m));
   }
   private copy(m: Message): Message {
-    return { ...m, reactions: { ...m.reactions }, attachment: m.attachment ? { ...m.attachment } : null };
+    return { ...m, reactions: { ...m.reactions }, attachment: m.attachment ? { ...m.attachment } : null, location: m.location ? { ...m.location } : null };
   }
   async unreadIncoming(conversationId: string) {
     return (await this.messages(conversationId, Number.MAX_SAFE_INTEGER)).filter((m) => !m.outgoing && m.status === "received");

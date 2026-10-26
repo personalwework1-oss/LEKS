@@ -28,6 +28,8 @@ export interface Conversation {
   left: boolean;
   /** Restored from a backup on a new phone: readable, waiting for someone in it to add this phone. */
   rejoining?: boolean;
+  /** Kept at the top of the list (only on this phone). */
+  pinned?: boolean;
 }
 
 /**
@@ -59,8 +61,19 @@ export interface Message {
   reactions: Record<string, string>;
   /** A photo or file; `text` is then its caption. */
   attachment: Attachment | null;
+  /** A place on the map (the text is then empty or a caption). */
+  location?: GeoPoint | null;
+  /** Forwarded from another chat (who wrote it first is not shown, like in other messengers). */
+  forwarded?: boolean;
   /** A note in the chat about a call (kept only on this phone). */
   event?: ChatEvent | null;
+}
+
+export interface GeoPoint {
+  lat: number;
+  lon: number;
+  /** Metres. */
+  accuracy?: number;
 }
 
 export type CallOutcome = "ended" | "missed" | "declined" | "no_answer" | "cancelled" | "failed";
@@ -178,7 +191,7 @@ export interface MessageStore {
 export type Payload =
   | { v: 1; type: "intro"; accountId: string; displayName: string; username: string }
   | { v: 1; type: "profile"; displayName: string; about: string; photo: string | null; version: number }
-  | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string }
+  | { v: 1; type: "text"; id: string; text: string; sentAt: number; replyTo?: string; location?: GeoPoint; forwarded?: boolean }
   | {
       v: 1;
       type: "file";
@@ -197,6 +210,7 @@ export type Payload =
       thumb?: string;
       duration?: number;
       waveform?: number[];
+      forwarded?: boolean;
     }
   | { v: 1; type: "receipt"; state: "delivered" | "read"; ids: string[] }
   | { v: 1; type: "edit"; id: string; text: string; editedAt: number }

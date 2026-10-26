@@ -7,6 +7,7 @@ import {
   type AttachmentKind,
   type CallOutcome,
   type Conversation,
+  type GeoPoint,
   type GroupMember,
   type Message,
   MAX_GROUP_MEMBERS,
@@ -94,6 +95,20 @@ export function parseIdentity(identity: string): { accountId: string; deviceId: 
 
 const isString = (v: unknown): v is string => typeof v === "string";
 
+function isGeoPoint(v: unknown): v is GeoPoint {
+  if (!v || typeof v !== "object") return false;
+  const { lat, lon, accuracy } = v as Record<string, unknown>;
+  return (
+    typeof lat === "number" &&
+    typeof lon === "number" &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lon) <= 180 &&
+    (accuracy === undefined || (typeof accuracy === "number" && accuracy >= 0))
+  );
+}
+
 /** Checks what arrived; anything malformed is ignored rather than trusted. */
 export function decodePayload(bytes: Uint8Array): Payload | null {
   let value: Record<string, unknown>;
@@ -117,7 +132,12 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         ? (value as Payload)
         : null;
     case "text":
-      return isString(value.id) && isString(value.text) && typeof value.sentAt === "number" && (value.replyTo === undefined || isString(value.replyTo))
+      return isString(value.id) &&
+        isString(value.text) &&
+        typeof value.sentAt === "number" &&
+        (value.replyTo === undefined || isString(value.replyTo)) &&
+        (value.location === undefined || isGeoPoint(value.location)) &&
+        (value.forwarded === undefined || typeof value.forwarded === "boolean")
         ? (value as Payload)
         : null;
     case "receipt":
@@ -140,7 +160,8 @@ export function decodePayload(bytes: Uint8Array): Payload | null {
         (value.thumb === undefined || (isString(value.thumb) && value.thumb.length <= MAX_THUMB)) &&
         (value.duration === undefined || typeof value.duration === "number") &&
         (value.waveform === undefined ||
-          (Array.isArray(value.waveform) && value.waveform.length <= MAX_WAVEFORM && value.waveform.every((n: unknown) => typeof n === "number")))
+          (Array.isArray(value.waveform) && value.waveform.length <= MAX_WAVEFORM && value.waveform.every((n: unknown) => typeof n === "number"))) &&
+        (value.forwarded === undefined || typeof value.forwarded === "boolean")
         ? (value as Payload)
         : null;
     case "edit":
@@ -198,13 +219,26 @@ function filePayload(message: Message): Payload {
     ...(sent.thumb ? { thumb: sent.thumb } : {}),
     ...(sent.duration ? { duration: sent.duration } : {}),
     ...(sent.waveform ? { waveform: sent.waveform.map((n) => Math.round(n * 100) / 100) } : {}),
+    ...(message.forwarded ? { forwarded: true } : {}),
   };
 }
 
 /** What goes out for a message of mine, rebuilt from what is stored (held while a restored phone rejoins). */
 function payloadOf(message: Message): Payload | null {
-  if (message.attachment) return message.attachment.state === "sent" && message.attachment.blobId && message.attachment.key ? filePayload(message) : null;
-  return { v: 1, type: "text", id: message.id, text: message.text, sentAt: message.sentAt, ...(message.replyTo ? { replyTo: message.replyTo } : {}) };
+  if (message.attachment) {
+    const { state, blobId, key } = message.attachment;
+    return state !== "uploading" && state !== "failed" && blobId && key ? filePayload(message) : null;
+  }
+  return {
+    v: 1,
+    type: "text",
+    id: message.id,
+    text: message.text,
+    sentAt: message.sentAt,
+    ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+    ...(message.location ? { location: message.location } : {}),
+    ...(message.forwarded ? { forwarded: true } : {}),
+  };
 }
 
 function directChat(id: string, peerAccountId: string, at: number): Conversation {
@@ -256,6 +290,7 @@ export function previewOf(m: Message | null): string | null {
   if (m.event?.type === "call") return `📞 ${callText(m)}`;
   if (m.event?.type === "device") return "🔒 Новое устройство в чате";
   if (m.deleted) return "Сообщение удалено";
+  if (m.location && !m.text) return "📍 Геопозиция";
   if (m.attachment && !m.text) {
     const kind = m.attachment.kind;
     return kind === "image" ? "📷 Фото" : kind === "video" ? "🎬 Видео" : kind === "voice" ? "🎤 Голосовое сообщение" : `📎 ${m.attachment.name}`;
@@ -564,13 +599,15 @@ export class Messenger {
           deleted: false,
           reactions: {},
           attachment: null,
+          location: payload.location ? { lat: payload.location.lat, lon: payload.location.lon, accuracy: payload.location.accuracy } : null,
+          forwarded: payload.forwarded === true,
         });
         if (!added) return null;
         // A message I sent from another of my phones is not unread and needs no receipt.
         if (!mine) this.stopTyping(conversation.id);
         await this.store.saveConversation({
           ...conversation,
-          lastText: payload.text,
+          lastText: payload.location && !payload.text ? "📍 Геопозиция" : payload.text,
           lastAt: Math.max(conversation.lastAt, payload.sentAt),
           unread: conversation.unread + (mine ? 0 : 1),
         });
@@ -606,6 +643,7 @@ export class Messenger {
             localUri: null,
             state: "remote",
           },
+          forwarded: payload.forwarded === true,
         };
         if (!(await this.store.addMessage(message))) return null;
         if (!mine) this.stopTyping(conversation.id);
@@ -757,10 +795,86 @@ export class Messenger {
 
   /** Encrypts and queues a text message; it is shown right away as "sending". */
   async send(conversationId: string, text: string, replyTo: string | null = null): Promise<Message> {
+    return this.sendText(conversationId, { text, replyTo });
+  }
+
+  /** My current place, as a point on the map (taken on the phone; the server sees only encrypted bytes). */
+  async sendLocation(conversationId: string, point: GeoPoint): Promise<Message> {
+    if (!isGeoPoint(point)) throw new MessengerError("not_allowed");
+    const location: GeoPoint = {
+      lat: Math.round(point.lat * 1e6) / 1e6,
+      lon: Math.round(point.lon * 1e6) / 1e6,
+      ...(point.accuracy !== undefined ? { accuracy: Math.round(point.accuracy) } : {}),
+    };
+    return this.sendText(conversationId, { text: "", replyTo: null, location });
+  }
+
+  /**
+   * Sends a copy of a message to another chat, marked "forwarded". Photos and
+   * files are not uploaded again: the copy points to the same encrypted file.
+   */
+  async forward(messageId: string, toConversationId: string): Promise<Message> {
+    const source = await this.store.message(messageId);
+    if (!source || source.deleted || source.event) throw new MessengerError("not_allowed");
+    if (!source.attachment) return this.sendText(toConversationId, { text: source.text, replyTo: null, location: source.location ?? null, forwarded: true });
+
+    const target = await this.store.conversation(toConversationId);
+    if (!target) throw new MessengerError("unknown_chat");
+    if (target.left) throw new MessengerError("not_allowed");
+    const original = source.attachment;
+    if (!original.blobId || !original.key) throw new MessengerError("not_ready");
+    const id = this.uuid();
+    let localUri: string | null = null;
+    if (original.localUri && this.files) {
+      localUri = this.files.mediaUri(id, original.name);
+      await this.files.copy(original.localUri, localUri).catch(() => {
+        localUri = null;
+      });
+    }
+    const message: Message = {
+      id,
+      conversationId: toConversationId,
+      senderAccountId: this.me.accountId,
+      outgoing: true,
+      text: source.text,
+      sentAt: this.now(),
+      status: "sending",
+      replyTo: null,
+      editedAt: null,
+      deleted: false,
+      reactions: {},
+      // Without a local copy it can still be downloaded from the server, like a received one.
+      attachment: { ...original, localUri, state: localUri ? "sent" : "remote" },
+      forwarded: true,
+    };
+    await this.store.addMessage(message);
+    await this.store.saveConversation({ ...target, lastText: previewOf(message), lastAt: message.sentAt });
+    if (target.rejoining) {
+      this.changed();
+      this.askToRejoin();
+      return message;
+    }
+    await this.sendPayload(toConversationId, filePayload(message), message.id, message.id);
+    return message;
+  }
+
+  /** Keeps a chat at the top of the list (only on this phone). */
+  async setPinned(conversationId: string, pinned: boolean): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat) return;
+    await this.store.saveConversation({ ...chat, pinned });
+    this.changed();
+  }
+
+  private async sendText(
+    conversationId: string,
+    content: { text: string; replyTo: string | null; location?: GeoPoint | null; forwarded?: boolean },
+  ): Promise<Message> {
+    const { replyTo } = content;
     const conversation = await this.store.conversation(conversationId);
     if (!conversation) throw new MessengerError("unknown_chat");
     if (conversation.left) throw new MessengerError("not_allowed");
-    const body = text.slice(0, MAX_TEXT);
+    const body = content.text.slice(0, MAX_TEXT);
 
     const message: Message = {
       id: this.uuid(),
@@ -775,11 +889,13 @@ export class Messenger {
       deleted: false,
       reactions: {},
       attachment: null,
+      location: content.location ?? null,
+      forwarded: !!content.forwarded,
     };
-    const payload: Payload = { v: 1, type: "text", id: message.id, text: body, sentAt: message.sentAt, ...(replyTo ? { replyTo } : {}) };
+    const payload = payloadOf(message)!;
 
     await this.store.addMessage(message);
-    await this.store.saveConversation({ ...conversation, lastText: body, lastAt: message.sentAt });
+    await this.store.saveConversation({ ...conversation, lastText: previewOf(message), lastAt: message.sentAt });
     this.typingSentAt.delete(conversationId);
     if (conversation.rejoining) {
       // Restored phone not back in the chat yet: kept as "sending" and sent the moment it is.

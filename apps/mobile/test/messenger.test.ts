@@ -999,6 +999,66 @@ describe("profiles", () => {
   });
 });
 
+describe("location, forwarding and pinning", () => {
+  const carolMe: Me = { accountId: "acc-carol", deviceId: "dev-carol", displayName: "Кэрол", username: "carol" };
+
+  it("sends a place on the map", async () => {
+    const { a, b, chatId } = await chatting();
+    await a.messenger.sendLocation(chatId, { lat: 52.5200081, lon: 13.4049541, accuracy: 12.7 });
+    await a.messenger.flush();
+    await b.deliver();
+    const [theirs] = await b.messenger.messages(chatId);
+    expect(theirs).toMatchObject({ text: "", location: { lat: 52.520008, lon: 13.404954, accuracy: 13 } });
+    expect((await b.messenger.conversation(chatId))?.lastText).toBe("📍 Геопозиция");
+    await expect(a.messenger.sendLocation(chatId, { lat: 200, lon: 0 })).rejects.toThrow("not_allowed");
+    expect(decodePayload(utf8Encode(JSON.stringify({ v: 1, type: "text", id: "x", text: "", sentAt: 1, location: { lat: "1", lon: 2 } })))).toBeNull();
+  });
+
+  it("forwards a text and a photo to another chat, marked as forwarded", async () => {
+    const { server, a, b, chatId } = await chatting();
+    const c = new Phone(server, carolMe);
+    await c.messenger.onAuthenticated(0);
+    const toCarol = await a.messenger.startChat(asUser(carolMe));
+    await a.messenger.flush();
+    await c.deliver();
+
+    await b.messenger.send(chatId, "Встреча в 15:00");
+    const uri = join(b.files.dir, "picked-plan.jpg");
+    writeFileSync(uri, "план photo");
+    await b.messenger.sendFile(chatId, { uri, name: "plan.jpg", mime: "image/jpeg", size: 10, kind: "image", width: 10, height: 10, thumb: null });
+    await settle();
+    await b.messenger.flush();
+    await a.deliver();
+    await settle();
+    const [text, photo] = await a.messenger.messages(chatId);
+
+    await a.messenger.forward(text!.id, toCarol);
+    await a.messenger.forward(photo!.id, toCarol);
+    await a.messenger.flush();
+    await c.deliver();
+    await settle();
+    const got = await c.messenger.messages(toCarol);
+    expect(got.map((m) => [m.text, m.forwarded])).toEqual([
+      ["Встреча в 15:00", true],
+      ["", true],
+    ]);
+    expect(got[1]!.attachment?.blobId).toBe(photo!.attachment?.blobId);
+    expect(readFileSync(got[1]!.attachment!.localUri!, "utf8")).toBe("план photo");
+  });
+
+  it("keeps pinned chats at the top", async () => {
+    const { server, a, chatId } = await chatting();
+    const c = new Phone(server, carolMe);
+    await c.messenger.onAuthenticated(0);
+    const toCarol = await a.messenger.startChat(asUser(carolMe));
+    expect((await a.messenger.conversations())[0]!.id).toBe(toCarol);
+    await a.messenger.setPinned(chatId, true);
+    expect((await a.messenger.conversations())[0]!.id).toBe(chatId);
+    await a.messenger.send(toCarol, "новое");
+    expect((await a.messenger.conversations())[0]!.id).toBe(chatId);
+  });
+});
+
 describe("identity", () => {
   it("round-trips account and device ids", () => {
     expect(parseIdentity(identityOf({ accountId: "a", deviceId: "d" }))).toEqual({ accountId: "a", deviceId: "d" });

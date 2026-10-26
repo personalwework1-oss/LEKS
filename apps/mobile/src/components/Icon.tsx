@@ -253,6 +253,24 @@ const icons = {
       <Path d="M18 6L6 18" />
     </>
   ),
+  location: (
+    <>
+      <Path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z" />
+      <Circle cx="12" cy="9.5" r="2.5" />
+    </>
+  ),
+  forward: (
+    <>
+      <Path d="M14 5l7 7-7 7" />
+      <Path d="M21 12H9a6 6 0 0 0-6 6v1" />
+    </>
+  ),
+  pin: (
+    <>
+      <Path d="M9 4h6l-1 6 4 4H6l4-4-1-6z" />
+      <Path d="M12 14v7" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof icons;

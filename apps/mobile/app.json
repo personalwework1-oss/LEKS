@@ -47,6 +47,12 @@
         }
       ],
       [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "LEKS берёт геопозицию, только когда вы сами отправляете её в чат."
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "android": {
