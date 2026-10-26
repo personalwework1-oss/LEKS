@@ -36,6 +36,10 @@ export interface Conversation {
   draft?: string | null;
   /** false: someone I do not know started it (or added me to a group) and I have not answered yet. */
   accepted?: boolean;
+  /** Moved out of the main list (only on this phone). */
+  archived?: boolean;
+  /** No notifications until then (ms); a far-future value means "always". */
+  mutedUntil?: number;
 }
 
 /**
@@ -167,6 +171,11 @@ export interface Person {
 
 /** The longest "about" text. */
 export const MAX_ABOUT = 140;
+
+/** "Always" for muting: year 2100. */
+export const MUTED_FOREVER = 4_102_444_800_000;
+
+export const isMuted = (chat: { mutedUntil?: number } | null | undefined, now = Date.now()) => !!chat?.mutedUntil && chat.mutedUntil > now;
 export const MAX_DISPLAY_NAME = 64;
 /** Profile photos travel inside the encrypted message, so they are kept small. */
 export const MAX_PHOTO_CHARS = 110_000;
@@ -182,6 +191,8 @@ export interface OutboxItem {
   messageId: string | null;
   /** Whether an offline recipient gets a push for it. */
   wake?: "message" | "call" | null;
+  /** The chat's tag, so the server can skip pushes for a chat the recipient muted. */
+  chat?: string | null;
 }
 
 /** Where chats live on the phone. */

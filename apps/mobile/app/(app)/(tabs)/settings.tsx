@@ -2,6 +2,7 @@ import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { setTheme, THEME_LABEL, type ThemeMode, themeMode } from "@/appearance";
 import { Icon } from "@/components/Icon";
 import { SettingsGroup } from "@/components/SettingsList";
 import { usePeople } from "@/messaging/hooks";
@@ -18,6 +19,7 @@ export default function Settings() {
   const { session, lock, biometricLabel, signOut, realtime } = useSession();
   const people = usePeople();
   const me = session ? people.get(session.accountId) : undefined;
+  const [theme, setThemeState] = useState<ThemeMode>(themeMode());
   const [push, setPush] = useState<PushState>(pushState());
   const [testing, setTesting] = useState(false);
   useEffect(() => onPushState(setPush), []);
@@ -128,6 +130,26 @@ export default function Settings() {
           }
         />
       )}
+      <SettingsGroup
+        title="Оформление"
+        rows={[
+          {
+            title: "Тема",
+            value: THEME_LABEL[theme],
+            onPress: () =>
+              Alert.alert("Тема", undefined, [
+                ...(["system", "light", "dark"] as const).map((mode) => ({
+                  text: `${THEME_LABEL[mode]}${mode === theme ? " ✓" : ""}`,
+                  onPress: () => {
+                    setThemeState(mode);
+                    void setTheme(mode);
+                  },
+                })),
+                { text: "Отмена", style: "cancel" as const },
+              ], { cancelable: true }),
+          },
+        ]}
+      />
       <SettingsGroup
         title="Переписка"
         rows={[

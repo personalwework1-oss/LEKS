@@ -505,6 +505,29 @@ export class Store {
     await this.pool.query("INSERT INTO contacts (a, b, started_by) VALUES ($1, $2, $1) ON CONFLICT DO NOTHING", [a, b]);
   }
 
+  async muteChat(accountId: string, chatTag: string, until: number): Promise<void> {
+    if (until <= Date.now()) {
+      await this.pool.query("DELETE FROM chat_mutes WHERE account_id = $1 AND chat_tag = $2", [accountId, chatTag]);
+      return;
+    }
+    await this.pool.query(
+      `INSERT INTO chat_mutes (account_id, chat_tag, until) VALUES ($1, $2, to_timestamp($3 / 1000.0))
+       ON CONFLICT (account_id, chat_tag) DO UPDATE SET until = EXCLUDED.until`,
+      [accountId, chatTag, until],
+    );
+  }
+
+  /** Of these devices, the ones whose owner muted the chat right now. */
+  async mutedDevices(deviceIds: string[], chatTag: string): Promise<Set<string>> {
+    if (deviceIds.length === 0) return new Set();
+    const { rows } = await this.pool.query<{ id: string }>(
+      `SELECT d.id FROM devices d JOIN chat_mutes m ON m.account_id = d.account_id
+        WHERE d.id = ANY($1::uuid[]) AND m.chat_tag = $2 AND m.until > now()`,
+      [deviceIds, chatTag],
+    );
+    return new Set(rows.map((r) => r.id));
+  }
+
   async setDisplayName(accountId: string, displayName: string): Promise<void> {
     await this.pool.query("UPDATE accounts SET display_name = $2 WHERE id = $1", [accountId, displayName]);
   }

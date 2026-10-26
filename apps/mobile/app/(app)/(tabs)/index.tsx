@@ -1,15 +1,13 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import * as Haptics from "expo-haptics";
-import { Alert, FlatList, Pressable, Text, TextInput, View } from "react-native";
+import { FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BackupReminder } from "@/components/BackupReminder";
+import { ChatRow } from "@/components/ChatRow";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { Icon } from "@/components/Icon";
 import { AppText, Avatar, Button, IconButton } from "@/components/ui";
-import { listTime } from "@/format";
 import { chatFace, useConversations, usePeople } from "@/messaging/hooks";
-import type { Conversation, Person } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
 
@@ -24,9 +22,12 @@ export default function Chats() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
 
-  const unreadChats = conversations.filter((c) => c.unread > 0).length;
+  const archived = conversations.filter((c) => c.archived);
+  const active = conversations.filter((c) => !c.archived);
+  const unreadChats = active.filter((c) => c.unread > 0).length;
   const needle = query.trim().toLowerCase();
-  const shown = conversations.filter(
+  // Searching looks in the archive too.
+  const shown = (needle ? conversations : active).filter(
     (c) =>
       (filter === "all" || c.unread > 0) &&
       (!needle || chatFace(people, c).title.toLowerCase().includes(needle) || c.title.toLowerCase().includes(needle) || (c.username ?? "").includes(needle.replace(/^@/, ""))),
@@ -84,12 +85,29 @@ export default function Chats() {
         })}
       </View>
 
-      {shown.length > 0 ? (
+      {shown.length > 0 || archived.length > 0 ? (
         <FlatList
           data={shown}
           keyExtractor={(c) => c.id}
           renderItem={({ item }) => <ChatRow chat={item} people={people} />}
           keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            archived.length > 0 && !needle && filter === "all" ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.push("/archive")}
+                style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+              >
+                <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: p.surfaceMuted, alignItems: "center", justifyContent: "center" }}>
+                  <Icon name="archive" size={24} color={p.textMuted} strokeWidth={2} />
+                </View>
+                <AppText variant="bodyStrong" style={{ flex: 1 }}>
+                  Архив
+                </AppText>
+                <AppText muted>{archived.length}</AppText>
+              </Pressable>
+            ) : null
+          }
         />
       ) : (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40, gap: 12 }}>
@@ -114,67 +132,5 @@ export default function Chats() {
         </View>
       )}
     </View>
-  );
-}
-
-function ChatRow({ chat, people }: { chat: Conversation; people: Map<string, Person> }) {
-  const p = usePalette();
-  const { messenger } = useSession();
-  const unread = chat.unread > 0;
-  const face = chatFace(people, chat);
-  const menu = () => {
-    void Haptics.selectionAsync();
-    Alert.alert(face.title, undefined, [
-      { text: chat.pinned ? "Открепить" : "Закрепить наверху", onPress: () => void messenger?.setPinned(chat.id, !chat.pinned) },
-      { text: "Отмена", style: "cancel" },
-    ]);
-  };
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${face.title}${unread ? `, непрочитанных: ${chat.unread}` : ""}`}
-      onPress={() => router.push({ pathname: "/chat/[id]", params: { id: chat.id } })}
-      onLongPress={menu}
-      delayLongPress={350}
-      accessibilityHint="Удерживайте, чтобы закрепить"
-      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
-    >
-      <Avatar name={face.title} seed={chat.peerAccountId} size={54} photo={face.photo} />
-      <View style={{ flex: 1, gap: 3 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <AppText variant="bodyStrong" numberOfLines={1} style={{ flex: 1 }}>
-            {face.title}
-          </AppText>
-          {chat.accepted === false && chat.kind === "direct" ? (
-            <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, backgroundColor: p.warningSoft }}>
-              <AppText variant="caption" color={p.warningText} style={{ fontSize: 11, lineHeight: 15 }}>
-                запрос
-              </AppText>
-            </View>
-          ) : null}
-          {chat.pinned ? <Icon name="pin" size={14} color={p.textMuted} strokeWidth={2.2} /> : null}
-          <AppText variant="caption" color={unread ? p.accentText : p.textMuted}>
-            {listTime(chat.lastAt)}
-          </AppText>
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          {chat.draft ? (
-            <AppText numberOfLines={1} style={{ flex: 1, fontSize: 15, lineHeight: 20 }} color={p.textMuted}>
-              <Text style={{ color: p.danger }}>Черновик: </Text>
-              {chat.draft}
-            </AppText>
-          ) : (
-            <AppText muted numberOfLines={1} style={{ flex: 1, fontSize: 15, lineHeight: 20 }}>
-              {chat.lastText ?? (chat.username ? `@${chat.username}` : "Пока нет сообщений")}
-            </AppText>
-          )}
-          {unread ? (
-            <View style={{ minWidth: 22, height: 22, paddingHorizontal: 7, borderRadius: 11, backgroundColor: p.accent, alignItems: "center", justifyContent: "center" }}>
-              <Text style={{ fontFamily: fonts.semibold, fontSize: 12, color: p.onAccent }}>{chat.unread}</Text>
-            </View>
-          ) : null}
-        </View>
-      </View>
-    </Pressable>
   );
 }

@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import { type ComponentRef, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Pressable, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, FlatList, KeyboardAvoidingView, Modal, PanResponder, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AttachmentView } from "@/components/AttachmentView";
 import { Icon, type IconName } from "@/components/Icon";
@@ -17,6 +17,9 @@ import { chatFace, nameOf, useConversation, useConversations, useMessages, usePe
 import { type CallEvent, type Conversation, type GeoPoint, type Message, type Person, REACTIONS, timerLabel } from "@/messaging/types";
 import { useSession } from "@/state/session";
 import { fonts, usePalette } from "@/theme";
+
+/** How far (dp) a message is swiped right to answer it. */
+const SWIPE_REPLY_AT = 56;
 
 type Row = { kind: "day"; key: string; label: string } | { kind: "message"; key: string; message: Message };
 /** What the composer is doing besides writing a new message. */
@@ -45,6 +48,9 @@ export default function Chat() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Message[]>([]);
   const [highlight, setHighlight] = useState<string | null>(null);
+  // Scrolled up: a "down" button, with how many new messages came meanwhile.
+  const [away, setAway] = useState(false);
+  const awayMark = useRef<string | null>(null);
 
   // The unsent text comes back when the chat is opened again.
   const draftLoaded = useRef(false);
@@ -191,6 +197,11 @@ export default function Chat() {
     setMode(null);
   }
 
+  const newSinceAway = (() => {
+    if (!away || !awayMark.current) return 0;
+    const from = messages.findIndex((m) => m.id === awayMark.current);
+    return from < 0 ? 0 : messages.slice(from + 1).filter((m) => !m.outgoing && !m.event).length;
+  })();
   const isGroup = chat?.kind === "group";
   const peerBlocked = !isGroup && !!chat && !!people.get(chat.peerAccountId)?.blocked;
   const names = useMemo(
@@ -307,10 +318,17 @@ export default function Chat() {
         </View>
       ) : null}
 
+      <View style={[{ flex: 1 }, searching && query.trim() ? { display: "none" } : null]}>
       <FlatList
         ref={list}
         inverted
-        style={searching && query.trim() ? { display: "none" } : undefined}
+        scrollEventThrottle={100}
+        onScroll={(e) => {
+          const isAway = e.nativeEvent.contentOffset.y > 400;
+          if (isAway === away) return;
+          awayMark.current = isAway ? (messages[messages.length - 1]?.id ?? null) : null;
+          setAway(isAway);
+        }}
         onScrollToIndexFailed={(info) => {
           list.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
           setTimeout(() => list.current?.scrollToIndex({ index: info.index, viewPosition: 0.5 }), 100);
@@ -338,6 +356,11 @@ export default function Chat() {
           ) : (
             <Bubble
               highlighted={highlight === item.message.id}
+              onSwipeReply={chat?.left || peerBlocked ? undefined : () => startMode({ kind: "reply", message: item.message })}
+              onDoubleTap={() => {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void messenger?.react(item.message.id, "❤️");
+              }}
               message={item.message}
               quoted={item.message.replyTo ? (byId.get(item.message.replyTo) ?? "missing") : null}
               myAccountId={session?.accountId ?? ""}
@@ -364,6 +387,39 @@ export default function Chat() {
           </View>
         }
       />
+      {away ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={newSinceAway > 0 ? `Вниз, новых сообщений: ${newSinceAway}` : "Вниз, к последним сообщениям"}
+          onPress={() => list.current?.scrollToOffset({ offset: 0, animated: true })}
+          style={{
+            position: "absolute",
+            right: 14,
+            bottom: 14,
+            width: 44,
+            height: 44,
+            borderRadius: 22,
+            backgroundColor: p.surface,
+            alignItems: "center",
+            justifyContent: "center",
+            shadowColor: "#000",
+            shadowOpacity: 0.18,
+            shadowRadius: 6,
+            shadowOffset: { width: 0, height: 2 },
+            elevation: 4,
+          }}
+        >
+          <Icon name="arrowDown" size={22} color={p.text} strokeWidth={2.2} />
+          {newSinceAway > 0 ? (
+            <View style={{ position: "absolute", top: -6, right: -4, minWidth: 20, height: 20, paddingHorizontal: 5, borderRadius: 10, backgroundColor: p.accent, alignItems: "center", justifyContent: "center" }}>
+              <AppText variant="caption" color={p.onAccent} style={{ fontSize: 11, lineHeight: 14, fontFamily: fonts.semibold }}>
+                {newSinceAway}
+              </AppText>
+            </View>
+          ) : null}
+        </Pressable>
+      ) : null}
+      </View>
 
       {skipped ? (
         <View style={{ backgroundColor: p.surface, paddingHorizontal: 16, paddingVertical: 8, borderTopWidth: 1, borderTopColor: p.separator }}>
@@ -686,8 +742,12 @@ function Bubble({
   onRetry,
   showSender,
   highlighted,
+  onSwipeReply,
+  onDoubleTap,
 }: {
   highlighted?: boolean;
+  onSwipeReply?: () => void;
+  onDoubleTap?: () => void;
   message: Message;
   showSender: boolean;
   /** The message this one answers; "missing" if it is not on this phone. */
@@ -704,6 +764,47 @@ function Bubble({
   const fg = out ? p.onAccent : p.bubbleInText;
   const meta = out ? "rgba(255,255,255,0.85)" : p.textMuted;
 
+  // Swipe right to answer, like in other messengers.
+  const shift = useRef(new Animated.Value(0)).current;
+  const armed = useRef(false);
+  const replyRef = useRef(onSwipeReply);
+  replyRef.current = onSwipeReply;
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, g) => !!replyRef.current && g.dx > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 2,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderMove: (_, g) => {
+          const x = Math.max(0, Math.min(g.dx * 0.8, SWIPE_REPLY_AT + 24));
+          shift.setValue(x);
+          if (x >= SWIPE_REPLY_AT && !armed.current) {
+            armed.current = true;
+            void Haptics.selectionAsync();
+          } else if (x < SWIPE_REPLY_AT && armed.current) armed.current = false;
+        },
+        onPanResponderRelease: () => {
+          if (armed.current) replyRef.current?.();
+          armed.current = false;
+          Animated.spring(shift, { toValue: 0, useNativeDriver: true, bounciness: 6 }).start();
+        },
+        onPanResponderTerminate: () => {
+          armed.current = false;
+          Animated.spring(shift, { toValue: 0, useNativeDriver: true }).start();
+        },
+      }),
+    [shift],
+  );
+
+  // Two quick taps: ❤️.
+  const lastTap = useRef(0);
+  const tap = () => {
+    const now = Date.now();
+    if (now - lastTap.current < 300) {
+      lastTap.current = 0;
+      onDoubleTap?.();
+    } else lastTap.current = now;
+  };
+
   // Emoji → how many people, mine first.
   const reactions = useMemo(() => {
     const counts = new Map<string, { count: number; mine: boolean }>();
@@ -719,8 +820,30 @@ function Bubble({
     : `${out ? "Вы" : peerName}: ${previewOf(message)}. ${clockTime(message.sentAt)}.${message.editedAt ? " Изменено." : ""} ${STATUS_LABEL[message.status]}`;
 
   return (
-    <View style={{ alignItems: out ? "flex-end" : "flex-start", borderRadius: 12, backgroundColor: highlighted ? p.accentSoft : "transparent" }}>
+    <Animated.View
+      {...pan.panHandlers}
+      style={{ alignItems: out ? "flex-end" : "flex-start", borderRadius: 12, backgroundColor: highlighted ? p.accentSoft : "transparent", transform: [{ translateX: shift }] }}
+    >
+      <Animated.View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: -36,
+          top: "50%",
+          marginTop: -14,
+          width: 28,
+          height: 28,
+          borderRadius: 14,
+          backgroundColor: p.surface,
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: shift.interpolate({ inputRange: [0, SWIPE_REPLY_AT], outputRange: [0, 1], extrapolate: "clamp" }),
+        }}
+      >
+        <Icon name="reply" size={16} color={p.accentText} strokeWidth={2.2} />
+      </Animated.View>
       <Pressable
+        onPress={message.deleted ? undefined : tap}
         onLongPress={message.deleted ? undefined : onLongPress}
         delayLongPress={300}
         accessibilityLabel={label}
@@ -834,7 +957,7 @@ function Bubble({
           ))}
         </View>
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 

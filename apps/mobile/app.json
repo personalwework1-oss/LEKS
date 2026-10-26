@@ -47,6 +47,13 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Камера нужна для видеозвонков, фото профиля и QR-кодов.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-location",
         {
           "locationWhenInUsePermission": "LEKS берёт геопозицию, только когда вы сами отправляете её в чат."

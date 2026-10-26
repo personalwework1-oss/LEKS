@@ -1,4 +1,5 @@
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
 import { formatDuration } from "@/features/waveform";
 import type { Attachment } from "@/messaging/types";
@@ -7,6 +8,9 @@ import { Icon } from "./Icon";
 import { AppText } from "./ui";
 
 const FLAT = Array.from({ length: 32 }, () => 0.15);
+const RATES = [1, 1.5, 2] as const;
+/** The last chosen speed, kept for the next voice message (while the app is open). */
+let lastRate: (typeof RATES)[number] = 1;
 
 /** Play button, loudness bars that fill as it plays, and the time. */
 export function VoicePlayer({ attachment: a, outgoing, onDownload, onRetry }: { attachment: Attachment; outgoing: boolean; onDownload: () => void; onRetry: () => void }) {
@@ -20,6 +24,20 @@ export function VoicePlayer({ attachment: a, outgoing, onDownload, onRetry }: { 
   const bars = a.waveform?.length ? a.waveform : FLAT;
   const filled = outgoing ? "#FFFFFF" : p.accent;
   const empty = outgoing ? "rgba(255,255,255,0.4)" : p.separator;
+  const [rate, setRate] = useState<(typeof RATES)[number]>(lastRate);
+  useEffect(() => {
+    try {
+      player.setPlaybackRate(rate);
+    } catch {
+      // Not loaded yet; set again when it plays.
+    }
+  }, [player, rate, status.isLoaded]);
+
+  function nextRate() {
+    const next = RATES[(RATES.indexOf(rate) + 1) % RATES.length]!;
+    lastRate = next;
+    setRate(next);
+  }
 
   function press() {
     if (failed) return outgoing ? onRetry() : onDownload();
@@ -54,9 +72,24 @@ export function VoicePlayer({ attachment: a, outgoing, onDownload, onRetry }: { 
             />
           ))}
         </View>
-        <AppText variant="caption" color={outgoing ? "rgba(255,255,255,0.85)" : p.textMuted} style={{ fontSize: 12, lineHeight: 16 }}>
-          {status.playing || progress > 0 ? formatDuration(status.currentTime * 1000) : formatDuration(a.duration ?? total)}
-        </AppText>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <AppText variant="caption" color={outgoing ? "rgba(255,255,255,0.85)" : p.textMuted} style={{ fontSize: 12, lineHeight: 16 }}>
+            {status.playing || progress > 0 ? formatDuration(status.currentTime * 1000) : formatDuration(a.duration ?? total)}
+          </AppText>
+          {a.localUri ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Скорость ${rate}×, нажмите, чтобы изменить`}
+              onPress={nextRate}
+              hitSlop={8}
+              style={{ paddingHorizontal: 6, borderRadius: 8, backgroundColor: outgoing ? "rgba(255,255,255,0.22)" : p.accentSoft }}
+            >
+              <AppText variant="caption" color={outgoing ? "#FFFFFF" : p.accentText} style={{ fontSize: 11, lineHeight: 16 }}>
+                {`${String(rate).replace(".", ",")}×`}
+              </AppText>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
     </View>
   );

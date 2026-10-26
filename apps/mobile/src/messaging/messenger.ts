@@ -1,4 +1,6 @@
 import { type DeliveredMessage, MAX_BLOB_BYTES, MAX_REPORT_MESSAGES, type PublicUser, type ReportReason } from "@leks/protocol";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Realtime } from "../api/realtime";
 import { type Engine, utf8Decode, utf8Encode } from "../crypto/engine";
 import type { FileIO } from "./files";
@@ -21,6 +23,7 @@ import {
   REACTIONS,
   TIMER_CHOICES,
   timerLabel,
+  isMuted,
 } from "./types";
 
 /** The part of the server connection the messenger uses (the Realtime client in the app). */
@@ -87,6 +90,9 @@ export interface OutgoingFile {
   duration?: number | null;
   waveform?: number[] | null;
 }
+
+/** How the server knows a chat for muting: a hash it cannot turn back into the chat or its members. */
+export const chatTag = (conversationId: string) => bytesToHex(sha256(utf8ToBytes(`leks-chat:${conversationId}`))).slice(0, 32);
 
 export const identityOf = (me: { accountId: string; deviceId: string }) => `${me.accountId}:${me.deviceId}`;
 
@@ -660,6 +666,7 @@ export class Messenger {
           lastText: payload.location && !payload.text ? "📍 Геопозиция" : payload.text,
           lastAt: Math.max(conversation.lastAt, payload.sentAt),
           unread: conversation.unread + (mine ? 0 : 1),
+          archived: conversation.archived && isMuted(conversation, this.now()),
         });
         if (!mine) this.arrivalListener?.(conversation.id);
         return mine ? null : { conversationId: conversation.id, id: payload.id };
@@ -704,6 +711,7 @@ export class Messenger {
           lastText: previewOf(message),
           lastAt: Math.max(conversation.lastAt, payload.sentAt),
           unread: conversation.unread + (mine ? 0 : 1),
+          archived: conversation.archived && isMuted(conversation, this.now()),
         });
         if ((payload.kind === "image" || payload.kind === "voice") && payload.size <= AUTO_DOWNLOAD_BYTES) void this.download(message.id);
         if (!mine) this.arrivalListener?.(conversation.id);
@@ -909,6 +917,28 @@ export class Messenger {
     }
     await this.sendPayload(toConversationId, filePayload(message), message.id, message.id);
     return message;
+  }
+
+  /**
+   * Mutes a chat until the given time (ms; MUTED_FOREVER for always), or
+   * unmutes it with null. The server is told only the chat's tag, so muted
+   * chats do not wake my phones; calls still ring.
+   */
+  async setMuted(conversationId: string, until: number | null): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat) return;
+    const value = until && until > this.now() ? until : 0;
+    await this.transport.request({ type: "mute_chat", chat: chatTag(conversationId), until: value }, "chat_muted");
+    await this.store.saveConversation({ ...chat, mutedUntil: value });
+    this.changed();
+  }
+
+  /** Moves a chat to the archive or back (only on this phone). A new message brings it back unless it is muted. */
+  async setArchived(conversationId: string, archived: boolean): Promise<void> {
+    const chat = await this.store.conversation(conversationId);
+    if (!chat) return;
+    await this.store.saveConversation({ ...chat, archived, pinned: archived ? false : chat.pinned });
+    this.changed();
   }
 
   /** Keeps a chat at the top of the list (only on this phone). */
@@ -1202,7 +1232,7 @@ export class Messenger {
     }
     // Only things a person should see wake their phone; receipts, reactions and edits wait.
     const wake = payload.type === "text" || payload.type === "file" ? "message" : payload.type === "call_invite" ? "call" : null;
-    await this.queue("message", recipients, ciphertext, messageId, id, wake);
+    await this.queue("message", recipients, ciphertext, messageId, id, wake, wake ? chatTag(conversationId) : null);
     this.changed();
     void this.flush();
   }
@@ -1214,10 +1244,11 @@ export class Messenger {
     messageId: string | null,
     id: string = this.uuid(),
     wake: OutboxItem["wake"] = null,
+    chat: string | null = null,
   ): Promise<void> {
     // Strictly increasing, so the outbox keeps the order things were created in.
     this.lastQueued = Math.max(this.now(), this.lastQueued + 1);
-    await this.store.enqueue({ id, createdAt: this.lastQueued, kind, recipients, payload, messageId, wake });
+    await this.store.enqueue({ id, createdAt: this.lastQueued, kind, recipients, payload, messageId, wake, chat });
   }
 
   /** Sends whatever is waiting in the outbox, in order; stops at the first failure and resumes later. */
@@ -1252,6 +1283,7 @@ export class Messenger {
           kind: item.kind,
           payload: item.payload,
           ...(item.wake ? { wake: item.wake } : {}),
+          ...(item.chat ? { chat: item.chat } : {}),
         });
       } catch {
         return false;

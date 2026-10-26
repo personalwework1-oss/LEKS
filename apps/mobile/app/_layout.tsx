@@ -4,10 +4,12 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { loadTheme } from "@/appearance";
 import { SessionProvider, useSession } from "@/state/session";
 import { usePalette } from "@/theme";
 
 void SplashScreen.preventAutoHideAsync();
+void loadTheme();
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({

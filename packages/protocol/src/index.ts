@@ -175,6 +175,9 @@ export const HttpErrorCode = z.enum([
 export type HttpErrorCode = z.infer<typeof HttpErrorCode>;
 export const HttpError = z.object({ error: HttpErrorCode });
 
+/** A chat as the server knows it for muting: 32 hex characters of a hash of its id. */
+export const ChatTag = z.string().regex(/^[0-9a-f]{32}$/);
+
 /** Why someone is reported. */
 export const ReportReason = z.enum(["spam", "scam", "abuse", "illegal", "other"]);
 export type ReportReason = z.infer<typeof ReportReason>;
@@ -215,6 +218,11 @@ export const ClientFrame = z.discriminatedUnion("type", [
      * receipts, typing, reactions and the like, which wait until the app opens.
      */
     wake: z.enum(["message", "call"]).optional(),
+    /**
+     * An opaque tag of the chat (a hash; the server cannot tell which chat it
+     * is), so a chat someone muted does not wake their phone.
+     */
+    chat: ChatTag.optional(),
   }),
   /** Confirms messages were stored on the device; the server then deletes them. */
   z.object({ type: z.literal("ack"), ids: z.array(z.number().int().positive()).min(1).max(500) }),
@@ -261,6 +269,8 @@ export const ClientFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("get_backup"), requestId: RequestId }),
   /** The name others see when they look me up by @username (photo and "about" go only end-to-end). */
   z.object({ type: z.literal("update_profile"), requestId: RequestId, displayName: DisplayName }),
+  /** Mutes a chat (by its tag) on all my phones until `until` (ms); 0 unmutes. Calls still ring. */
+  z.object({ type: z.literal("mute_chat"), requestId: RequestId, chat: ChatTag, until: z.number().int().min(0) }),
   /** Stops this account's messages, calls and new chats reaching me. */
   z.object({ type: z.literal("block"), requestId: RequestId, accountId: Id }),
   z.object({ type: z.literal("unblock"), requestId: RequestId, accountId: Id }),
@@ -362,6 +372,7 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("nudge"), accountId: Id }),
   z.object({ type: z.literal("backup_saved"), requestId: RequestId }),
   z.object({ type: z.literal("profile_updated"), requestId: RequestId }),
+  z.object({ type: z.literal("chat_muted"), requestId: RequestId }),
   z.object({ type: z.literal("blocked"), requestId: RequestId }),
   z.object({ type: z.literal("unblocked"), requestId: RequestId }),
   z.object({ type: z.literal("blocks"), requestId: RequestId, accountIds: z.array(Id) }),

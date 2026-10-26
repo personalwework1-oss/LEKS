@@ -73,6 +73,7 @@ describe.skipIf(!databaseUrl)("server basics", () => {
       "004_blobs.sql",
       "005_backups_and_device_cleanup.sql",
       "006_blocks_reports_contacts.sql",
+      "007_chat_mutes.sql",
     ]);
     expect(await migrate(pool)).toEqual([]);
   });
@@ -81,6 +82,14 @@ describe.skipIf(!databaseUrl)("server basics", () => {
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "ok", database: "ok", protocol: PROTOCOL_VERSION, push: "off", calls: "off" });
+  });
+
+  it("serves the invite page for a profile link, escaping nothing unsafe in", async () => {
+    const ok = await app.inject({ method: "GET", url: "/u/alice_1" });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body).toContain("leks://u/alice_1");
+    const bad = await app.inject({ method: "GET", url: "/u/%3Cscript%3E" });
+    expect(bad.statusCode).toBe(404);
   });
 
   it("WebSocket: hello returns a fresh 32-byte challenge each time", async () => {

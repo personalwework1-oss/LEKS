@@ -160,6 +160,26 @@ describe.skipIf(!databaseUrl)("device sign-in, keys and message delivery", () =>
     aliceClient.close();
   });
 
+  it("does not wake a phone for a chat its owner muted, but still rings for calls", async () => {
+    const alice = await register(app);
+    const bob = await register(app);
+    const aliceClient = await TestClient.signedIn(app, alice.session, alice.key);
+    const bobClient = await TestClient.signedIn(app, bob.session, bob.key);
+    const chat = "0123456789abcdef0123456789abcdef";
+    bobClient.send({ type: "mute_chat", requestId: "m", chat, until: Date.now() + 3600_000 });
+    await bobClient.next("chat_muted");
+    bobClient.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    for (const wake of ["message", "call"] as const) {
+      aliceClient.send({ type: "send", id: randomUUID(), recipients: [bob.session.deviceId], kind: "message", payload: randomPayload(), wake, chat });
+      await aliceClient.next("sent");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pushed).not.toContain(`message:${bob.session.deviceId}`);
+    expect(pushed).toContain(`call:${bob.session.deviceId}`);
+    aliceClient.close();
+  });
+
   it("delivers immediately to an online device, once per message id", async () => {
     const alice = await register(app);
     const bob = await register(app);

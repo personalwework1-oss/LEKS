@@ -265,6 +265,34 @@ const icons = {
       <Path d="M21 12H9a6 6 0 0 0-6 6v1" />
     </>
   ),
+  archive: (
+    <>
+      <Rect x="3" y="4" width="18" height="5" rx="1.5" />
+      <Path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" />
+      <Path d="M10 13h4" />
+    </>
+  ),
+  bellOff: (
+    <>
+      <Path d="M18 8a6 6 0 0 0-9.3-5" />
+      <Path d="M6 8c0 7-3 9-3 9h14" />
+      <Path d="M13.7 21a2 2 0 0 1-3.4 0" />
+      <Path d="M3 3l18 18" />
+    </>
+  ),
+  bell: (
+    <>
+      <Path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <Path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </>
+  ),
+  arrowDown: <Path d="M12 5v14M6 13l6 6 6-6" />,
+  scan: (
+    <>
+      <Path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" />
+      <Path d="M8 12h8" />
+    </>
+  ),
   pin: (
     <>
       <Path d="M9 4h6l-1 6 4 4H6l4-4-1-6z" />

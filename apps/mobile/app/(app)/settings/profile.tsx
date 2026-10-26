@@ -117,6 +117,9 @@ export default function ProfileScreen() {
         </AppText>
       </View>
 
+      <View style={{ marginTop: 20 }}>
+        <Button title="Мой QR-код и ссылка" variant="soft" icon="qr" onPress={() => router.push("/settings/qr")} />
+      </View>
       <View style={{ flex: 1, minHeight: 24 }} />
       {error ? (
         <AppText variant="caption" color={p.danger} style={{ textAlign: "center", marginBottom: 12 }}>

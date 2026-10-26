@@ -16,6 +16,7 @@ import { CallManager, RING_MS } from "../calls/CallManager";
 import { LeksCalls } from "../../modules/leks-calls";
 import { ExpoFiles } from "../messaging/expoFiles";
 import { SqliteStore } from "../messaging/sqliteStore";
+import { isMuted } from "../messaging/types";
 import { checkPasscode, withPasscode } from "../lock/passcode";
 import { askForNotifications, notifyLocally, registerForPush } from "../push";
 import { type LockSettings, NO_LOCK, secure, type StoredSession } from "../storage/secure";
@@ -163,7 +164,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
         callManager.receive(signal);
       });
-      created.onArrival(() => void notifyLocally("message").catch(() => undefined));
+      created.onArrival((conversationId) => {
+        void created
+          .conversation(conversationId)
+          .then((chat) => (isMuted(chat) ? undefined : notifyLocally("message")))
+          .catch(() => undefined);
+      });
       // Disappearing messages: checked every minute while the app is open, and on opening.
       void created.purgeExpired().catch(() => undefined);
       purgeTimer = setInterval(() => void created.purgeExpired().catch(() => undefined), 60_000);

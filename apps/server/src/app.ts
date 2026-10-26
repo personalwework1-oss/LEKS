@@ -8,6 +8,7 @@ import { BlobStorage } from "./blobs.js";
 import type { CallConfig } from "./calls.js";
 import { Hub, noPush, type PushNotifier } from "./hub.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { inviteRoutes } from "./routes/invite.js";
 import { blobRoutes } from "./routes/blobs.js";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { Store } from "./store.js";
@@ -86,6 +87,7 @@ export async function buildApp({
   accountRoutes(app, store, hub);
   realtimeRoutes(app, store, hub, calls, notifier);
   blobRoutes(app, store, blobs);
+  inviteRoutes(app);
 
   if (purgeIntervalMs > 0) {
     const timer = setInterval(() => {

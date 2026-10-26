@@ -82,17 +82,34 @@ export class Hub {
   }
 
   /** Delivers to connected devices; offline ones get a push only when the sender asked to wake them. */
-  notifyQueued(deviceIds: string[], wake?: WakeReason, from?: string): void {
+  notifyQueued(deviceIds: string[], wake?: WakeReason, from?: string, chat?: string): void {
+    const offline: string[] = [];
     for (const deviceId of new Set(deviceIds)) {
       const connections = this.connections.get(deviceId);
       if (connections && connections.size > 0) {
         for (const connection of connections) this.deliver(connection);
       } else if (wake) {
+        offline.push(deviceId);
+      }
+    }
+    if (!wake || offline.length === 0) return;
+    const wakeAll = (muted: Set<string>) => {
+      for (const deviceId of offline) {
+        if (muted.has(deviceId)) continue;
         this.push
           .notify(deviceId, wake, from)
           .then(() => this.log.info({ reason: wake }, "push signal handed over"))
           .catch((error: unknown) => this.log.warn({ err: error }, "push signal failed"));
       }
+    };
+    // A muted chat does not wake the phone for messages; calls still ring.
+    if (chat && wake === "message") {
+      void this.store
+        .mutedDevices(offline, chat)
+        .catch(() => new Set<string>())
+        .then(wakeAll);
+    } else {
+      wakeAll(new Set());
     }
   }
 

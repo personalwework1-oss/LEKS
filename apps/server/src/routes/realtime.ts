@@ -202,6 +202,7 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
             result.created.map((row) => row.recipientDeviceId),
             frame.wake,
             me.accountId,
+            frame.chat,
           );
           return;
         }
@@ -273,6 +274,12 @@ export function realtimeRoutes(app: FastifyInstance, store: Store, hub: Hub, cal
         case "set_backup": {
           if (!(await store.setBackup(me.accountId, me.deviceId, frame.blobId, frame.wrappedKey))) return error("not_found", frame.requestId);
           send({ type: "backup_saved", requestId: frame.requestId });
+          return;
+        }
+
+        case "mute_chat": {
+          await store.muteChat(me.accountId, frame.chat, frame.until);
+          send({ type: "chat_muted", requestId: frame.requestId });
           return;
         }
 

@@ -6,8 +6,10 @@ import { toBase64url } from "@leks/protocol";
 import { type Engine, type Received, utf8Decode, utf8Encode } from "../src/crypto/engine";
 import { type FileIO, safeName } from "../src/messaging/files";
 import { MemoryStore } from "../src/messaging/memoryStore";
+import { MUTED_FOREVER } from "../src/messaging/types";
 import {
   callText,
+  chatTag,
   decodePayload,
   identityOf,
   type Me,
@@ -161,6 +163,8 @@ class FakeServer {
   removed = new Set<string>();
   names = new Map<string, string>();
   blocks = new Map<string, Set<string>>();
+  mutes = new Map<string, number>();
+  chats: (string | null)[] = [];
   reports: { accountId: string; reason: string; messages: { text: string }[] }[] = [];
   backups = new Map<string, { blobId: string; wrappedKey: string; size: number; updatedAt: number }>();
   nudged: string[] = [];
@@ -201,6 +205,11 @@ class Phone {
           const items = [...byDevice.values()];
           server.keyPackages.set(frame.accountId!, list.filter((item) => !items.includes(item)));
           return { type: "key_packages", requestId: "r", accountId: frame.accountId, items };
+        }
+        if (frame.type === "mute_chat") {
+          const f = frame as unknown as { chat: string; until: number };
+          server.mutes.set(`${me.accountId}:${f.chat}`, f.until);
+          return { type: "chat_muted", requestId: "r" };
         }
         if (frame.type === "list_blocks") {
           return { type: "blocks", requestId: "r", accountIds: [...(server.blocks.get(me.accountId) ?? [])] };
@@ -246,6 +255,7 @@ class Phone {
         if (!phone.online) throw new Error("offline");
         server.sends.push(frame.id);
         server.wakes.push(frame.wake ?? null);
+        server.chats.push(frame.chat ?? null);
         for (const deviceId of frame.recipients) {
           server.phones.get(deviceId)?.inbox.push({
             id: server.nextId++,
@@ -1174,6 +1184,39 @@ describe("requests, blocking and reports", () => {
     expect(report!.reason).toBe("spam");
     expect(report!.messages.map((m) => m.text)).toEqual(Array.from({ length: 10 }, (_, i) => `спам ${i + 3}`));
     expect((await b.messenger.person("acc-alice"))?.blocked).toBe(true);
+  });
+});
+
+describe("mute and archive", () => {
+  it("mutes a chat on the server by its tag only, and tags messages that wake", async () => {
+    const { server, a, b, chatId } = await chatting();
+    await b.messenger.setMuted(chatId, Date.now() + 3600_000);
+    const tag = chatTag(chatId);
+    expect(tag).toMatch(/^[0-9a-f]{32}$/);
+    expect(tag).not.toContain(chatId);
+    expect(server.mutes.get(`acc-bob:${tag}`)).toBeGreaterThan(0);
+    expect((await b.messenger.conversation(chatId))?.mutedUntil).toBeGreaterThan(0);
+    server.chats.length = 0;
+    await a.messenger.send(chatId, "привет");
+    await a.messenger.flush();
+    expect(server.chats).toContain(tag);
+    await b.messenger.setMuted(chatId, null);
+    expect(server.mutes.get(`acc-bob:${tag}`)).toBe(0);
+  });
+
+  it("archived chats come back with a new message, unless muted", async () => {
+    const { a, b, chatId } = await chatting();
+    await b.messenger.setArchived(chatId, true);
+    await a.messenger.send(chatId, "раз");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.conversation(chatId))?.archived).toBe(false);
+    await b.messenger.setArchived(chatId, true);
+    await b.messenger.setMuted(chatId, MUTED_FOREVER);
+    await a.messenger.send(chatId, "два");
+    await a.messenger.flush();
+    await b.deliver();
+    expect((await b.messenger.conversation(chatId))?.archived).toBe(true);
   });
 });
 

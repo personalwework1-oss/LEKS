@@ -97,6 +97,23 @@ export default function Contacts() {
 
       <Pressable
         accessibilityRole="button"
+        onPress={() => router.push("/scan")}
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, marginTop: 8, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
+      >
+        <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: p.accentSoft, alignItems: "center", justifyContent: "center" }}>
+          <Icon name="scan" size={24} color={p.accentText} strokeWidth={2} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <AppText variant="bodyStrong">Сканировать QR-код</AppText>
+          <AppText variant="caption" muted style={{ fontSize: 14 }}>
+            Профиль человека рядом с вами
+          </AppText>
+        </View>
+        <Icon name="chevron" size={18} color={p.textSubtle} strokeWidth={2} />
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
         onPress={() => router.push("/group/new")}
         style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 20, paddingVertical: 10, marginTop: 8, backgroundColor: pressed ? p.surfaceMuted : "transparent" })}
       >

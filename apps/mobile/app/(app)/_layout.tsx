@@ -18,6 +18,10 @@ export default function AppLayout() {
       <Stack.Screen name="settings/devices" />
       <Stack.Screen name="settings/profile" />
       <Stack.Screen name="settings/blocked" />
+      <Stack.Screen name="archive" />
+      <Stack.Screen name="settings/qr" />
+      <Stack.Screen name="scan" options={{ presentation: "fullScreenModal" }} />
+      <Stack.Screen name="u/[username]" />
       <Stack.Screen name="contact/[id]" />
     </Stack>
     <CallOverlay />

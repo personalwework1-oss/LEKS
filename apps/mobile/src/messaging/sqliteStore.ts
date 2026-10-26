@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   pinned INTEGER NOT NULL DEFAULT 0,
   timer INTEGER NOT NULL DEFAULT 0,
   draft TEXT,
-  accepted INTEGER NOT NULL DEFAULT 1
+  accepted INTEGER NOT NULL DEFAULT 1,
+  archived INTEGER NOT NULL DEFAULT 0,
+  muted_until INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS conversations_peer ON conversations (peer_account_id);
 CREATE TABLE IF NOT EXISTS messages (
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   recipients TEXT NOT NULL,
   payload TEXT NOT NULL,
   message_id TEXT,
-  wake TEXT
+  wake TEXT,
+  chat TEXT
 );
 CREATE TABLE IF NOT EXISTS people (
   account_id TEXT PRIMARY KEY NOT NULL,
@@ -86,6 +89,9 @@ const UPGRADES: string[] = [
    ALTER TABLE messages ADD COLUMN expires_at INTEGER;`,
   `ALTER TABLE conversations ADD COLUMN accepted INTEGER NOT NULL DEFAULT 1;
    ALTER TABLE people ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE conversations ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE outbox ADD COLUMN chat TEXT;`,
 ];
 
 interface PersonRow {
@@ -127,6 +133,8 @@ interface ConversationRow {
   timer: number;
   draft: string | null;
   accepted: number;
+  archived: number;
+  muted_until: number;
 }
 
 interface MessageRow {
@@ -156,6 +164,7 @@ interface OutboxRow {
   payload: string;
   message_id: string | null;
   wake: "message" | "call" | null;
+  chat: string | null;
 }
 
 const toConversation = (r: ConversationRow): Conversation => ({
@@ -175,6 +184,8 @@ const toConversation = (r: ConversationRow): Conversation => ({
   timer: r.timer ?? 0,
   draft: r.draft,
   accepted: r.accepted !== 0,
+  archived: r.archived === 1,
+  mutedUntil: r.muted_until || 0,
 });
 
 function parseMembers(json: string): GroupMember[] {
@@ -268,13 +279,14 @@ export class SqliteStore implements MessageStore {
 
   async saveConversation(c: Conversation) {
     await this.db.runAsync(
-      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned, timer, draft, accepted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO conversations (id, peer_account_id, title, username, last_text, last_at, unread, kind, members, version, left_group, rejoining, pinned, timer, draft, accepted, archived, muted_until)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET peer_account_id = excluded.peer_account_id, title = excluded.title,
          username = excluded.username, last_text = excluded.last_text, last_at = excluded.last_at, unread = excluded.unread,
          kind = excluded.kind, members = excluded.members, version = excluded.version, left_group = excluded.left_group,
-         rejoining = excluded.rejoining, pinned = excluded.pinned, timer = excluded.timer, draft = excluded.draft, accepted = excluded.accepted`,
-      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0, c.timer ?? 0, c.draft ?? null, c.accepted === false ? 0 : 1],
+         rejoining = excluded.rejoining, pinned = excluded.pinned, timer = excluded.timer, draft = excluded.draft, accepted = excluded.accepted,
+         archived = excluded.archived, muted_until = excluded.muted_until`,
+      [c.id, c.peerAccountId, c.title, c.username, c.lastText, c.lastAt, c.unread, c.kind, JSON.stringify(c.members), c.version, c.left ? 1 : 0, c.rejoining ? 1 : 0, c.pinned ? 1 : 0, c.timer ?? 0, c.draft ?? null, c.accepted === false ? 0 : 1, c.archived ? 1 : 0, c.mutedUntil ?? 0],
     );
   }
 
@@ -381,8 +393,8 @@ export class SqliteStore implements MessageStore {
 
   async enqueue(item: OutboxItem) {
     await this.db.runAsync(
-      "INSERT OR REPLACE INTO outbox (id, created_at, kind, recipients, payload, message_id, wake) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [item.id, item.createdAt, item.kind, JSON.stringify(item.recipients), item.payload, item.messageId, item.wake ?? null],
+      "INSERT OR REPLACE INTO outbox (id, created_at, kind, recipients, payload, message_id, wake, chat) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [item.id, item.createdAt, item.kind, JSON.stringify(item.recipients), item.payload, item.messageId, item.wake ?? null, item.chat ?? null],
     );
   }
 
@@ -396,6 +408,7 @@ export class SqliteStore implements MessageStore {
       payload: r.payload,
       messageId: r.message_id,
       wake: r.wake,
+      chat: r.chat,
     }));
   }
 
